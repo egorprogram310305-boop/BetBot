@@ -167,21 +167,39 @@ async def handle_callback(update, context):
     await q.edit_message_text(text=q.message.text + f"\n\n🏁 Учтено. Банк: {round(new_bank, 2)}₽")
 
 def main():
-    # Запуск "обманки" для порта (для Render)
+    import signal
+
+# ... (предыдущий код функций scanner, show_stats и т.д. остается) ...
+
+def main():
+    # 1. Запуск сервера-пустышки для Render в отдельном потоке
+    print("📡 Запуск Health-Check сервера...")
     threading.Thread(target=run_health_server, daemon=True).start()
     
+    # 2. Инициализация приложения Telegram
+    if not TOKEN:
+        print("❌ ОШИБКА: Токен бота (BOT_TOKEN) не найден в переменных окружения!")
+        return
+
     app = Application.builder().token(TOKEN).build()
     
-    # Сначала регистрируем обработчики команд
+    # 3. Регистрация обработчиков (ВАЖНО: до запуска сканера)
     app.add_handler(CommandHandler("stats", show_stats))
+    app.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("Бот запущен и готов!")))
     app.add_handler(CallbackQueryHandler(handle_callback))
     
-    # Запускаем сканер отдельной фоновой задачей
-    loop = asyncio.get_event_loop()
-    loop.create_task(scanner(app.bot))
+    # 4. Запуск сканера в фоновом цикле через задачу
+    async def start_background_tasks(application: Application):
+        asyncio.create_task(scanner(application.bot))
+        print("🚀 Сканер матчей запущен в фоновом режиме")
+
+    # Добавляем задачу в хук после инициализации бота
+    app.post_init = start_background_tasks
+
+    print("✅ Бот начинает прослушивание сообщений...")
     
-    print("✅ Бот готов к работе. Команды активны.")
-    app.run_polling(drop_pending_updates=True) # drop_pending_updates очистит старые сообщения
+    # 5. Запуск бота (drop_pending_updates=True очистит старые нажатия)
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
