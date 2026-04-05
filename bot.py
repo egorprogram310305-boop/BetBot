@@ -245,6 +245,23 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_callback))
     asyncio.get_event_loop().create_task(scanner(app.bot))
     app.run_polling()
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
+
+# Мини-сервер, чтобы Render не ругался
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive")
+
+def run_health_check():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    server.serve_forever()
+
+# В функции main() добавь запуск этого потока:
+# threading.Thread(target=run_health_check, daemon=True).start()
 
 if __name__ == "__main__":
     main()
