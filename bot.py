@@ -42,7 +42,7 @@ def save_stats(stats):
 
 # --- 3. СКАНЕР (6 СТУПЕНЕЙ АНАЛИЗА) ---
 async def scanner(bot):
-    logging.info("🚀 Monster PRO: Сканирование с адаптивным банком...")
+    logging.info("🚀 Monster PRO: Сканирование запущено...")
     headers = {
         'x-rapidapi-host': "api-football-v1.p.rapidapi.com",
         'x-rapidapi-key': API_KEY
@@ -56,13 +56,15 @@ async def scanner(bot):
                 for match in res_fix["response"]:
                     f_id = match['fixture']['id']
                     
-                    # СТУПЕНЬ 1: МАТРИЦА
+                    # СТУПЕНЬ 1: МАТРИЦА (Форма + H2H)
                     res_pred = requests.get(f"https://api-football-v1.p.rapidapi.com/v3/predictions?fixture={f_id}", headers=headers).json()
                     if not res_pred.get("response"): continue
                     p_data = res_pred["response"][0]
                     
                     prob_home = int(p_data['predictions']['percent']['home'].replace('%','')) / 100
                     comp = p_data['comparison']
+                    
+                    # Фильтр формы и личных встреч
                     if int(comp['form']['home'].replace('%','')) < 60 or int(comp['h2h']['home'].replace('%','')) < 50:
                         continue
 
@@ -80,26 +82,26 @@ async def scanner(bot):
                         fair_odd = 1 / prob_home
                         edge = (current_p1 / fair_odd) - 1
                         
+                        # ЗЕЛЕНЫЙ СВЕТ (Пункт 4)
                         if edge >= 0.05:
-                            # --- ПУНКТ 6: ДИНАМИЧЕСКИЙ ПРОЦЕНТ СТАВКИ ---
+                            # ПУНКТ 6: ДИНАМИЧЕСКИЙ БАНК
                             stats = load_stats()
                             bank = stats['bank']
                             
-                            # Логика уверенности
                             if edge > 0.15 and prob_home > 0.65:
                                 confidence = "ВЫСОКАЯ 🔥"
-                                percent = 0.07 # 7% от банка
+                                percent = 0.07
                             elif edge >= 0.08:
                                 confidence = "СРЕДНЯЯ ⚡️"
-                                percent = 0.05 # 5% от банка
+                                percent = 0.05
                             else:
                                 confidence = "НИЗКАЯ ⚠️"
-                                percent = 0.02 # 2% от банка
+                                percent = 0.02
                             
                             bet_amount = round(bank * percent, 2)
                             
                             text = (
-                                f"💎 **MONSTER PRO: SIGNAL**\n\n"
+                                f"🔥 **MONSTER PRO: SIGNAL**\n\n"
                                 f"⚽️ {match['teams']['home']['name']} — {match['teams']['away']['name']}\n"
                                 f"📈 КФ: **{current_p1}**\n"
                                 f"📊 Вероятность: {int(prob_home*100)}%\n"
@@ -124,12 +126,15 @@ async def status_monitor(bot):
     while True:
         try:
             if ADMIN_ID:
-                await bot.send_message(chat_id=ADMIN_ID, text=f"🔔 Бот активен 🟢 [{datetime.now().strftime('%H:%M')]")
-        except: pass
+                # ОШИБКА ИСПРАВЛЕНА ТУТ: Убрана лишняя скобка в f-строке
+                time_now = datetime.now().strftime('%H:%M')
+                await bot.send_message(chat_id=ADMIN_ID, text=f"🔔 Бот активен 🟢 [{time_now}]")
+        except Exception as e:
+            logging.error(f"Ошибка монитора: {e}")
         await asyncio.sleep(3600)
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Бот Monster PRO запущен! Динамический анализ банка включен.")
+    await update.message.reply_text("✅ Бот Monster PRO запущен и работает по 6 ступеням анализа!")
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d = load_stats()
@@ -142,13 +147,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action, amt = query.data.split("_")
     amt = float(amt)
     if action == "win":
-        data["bank"] += amt * 0.9 # Примерная чистая прибыль
+        data["bank"] += amt * 0.9
         data["wins"] += 1
     else:
         data["bank"] -= amt
         data["losses"] += 1
     save_stats(data)
-    await query.edit_message_text(text=f"{query.message.text}\n\n📊 Итог зафиксирован!")
+    await query.edit_message_text(text=f"{query.message.text}\n\n📊 Итог сохранен в статистику!")
 
 # --- 5. ЗАПУСК ---
 async def post_init(app: Application):
@@ -157,11 +162,18 @@ async def post_init(app: Application):
 
 def main():
     threading.Thread(target=run_health_server, daemon=True).start()
-    if not TOKEN: return
+    
+    if not TOKEN:
+        logging.error("BOT_TOKEN не найден!")
+        return
+
     app = Application.builder().token(TOKEN).post_init(post_init).build()
+    
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CallbackQueryHandler(handle_callback))
+    
+    logging.info("🤖 Бот запускает polling...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
