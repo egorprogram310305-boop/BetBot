@@ -167,14 +167,21 @@ async def handle_callback(update, context):
     await q.edit_message_text(text=q.message.text + f"\n\n🏁 Учтено. Банк: {round(new_bank, 2)}₽")
 
 def main():
-    # Запуск "обманки" для порта
+    # Запуск "обманки" для порта (для Render)
     threading.Thread(target=run_health_server, daemon=True).start()
     
     app = Application.builder().token(TOKEN).build()
+    
+    # Сначала регистрируем обработчики команд
     app.add_handler(CommandHandler("stats", show_stats))
     app.add_handler(CallbackQueryHandler(handle_callback))
-    asyncio.get_event_loop().create_task(scanner(app.bot))
-    app.run_polling()
+    
+    # Запускаем сканер отдельной фоновой задачей
+    loop = asyncio.get_event_loop()
+    loop.create_task(scanner(app.bot))
+    
+    print("✅ Бот готов к работе. Команды активны.")
+    app.run_polling(drop_pending_updates=True) # drop_pending_updates очистит старые сообщения
 
 if __name__ == "__main__":
     main()
