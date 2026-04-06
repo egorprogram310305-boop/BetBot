@@ -47,9 +47,11 @@ def save_stats(stats):
 async def scanner(bot):
     logging.info("🛠 ПРОВЕРКА ЗАПУСКА СКАНЕРА...")
     
-    # НОВЫЕ ЗАГОЛОВКИ ДЛЯ ПРЯМОГО API-SPORTS
+    # Прямой API-ключ. strip() защитит от случайных пробелов
+    current_key = API_KEY.strip() if API_KEY else "80ec2103f7e47b2294435a50b57ba4eb"
+    
     headers = {
-        "x-apisports-key": API_KEY if API_KEY else "ВСТАВЬ_СЮДА_НОВЫЙ_КЛЮЧ_ЕСЛИ_В_RENDER_ПУСТО"
+        "x-apisports-key": current_key
     }
 
     while True:
