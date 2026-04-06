@@ -18,15 +18,21 @@ ADMIN_ID = os.getenv("ADMIN_ID")
 API_KEY = os.getenv("API_KEY")
 STATS_FILE = "stats.json"
 
-# --- 1. СЕРВЕР ДЛЯ RENDER (Health Check) ---
+# --- 1. СЕРВЕР ДЛЯ RENDER (Исправленный Health Check) ---
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
+        self.send_header('Content-type', 'text/html')
         self.end_headers()
         self.wfile.write(b"OK")
+    def log_message(self, format, *args):
+        return # Убираем лишний спам в логах Render
 
 def run_health_server():
-    server = HTTPServer(('0.0.0.0', 10000), HealthHandler)
+    # Render сам подставляет PORT, если его нет — берем 10000
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), HealthHandler)
+    logging.info(f"🌍 Health-Check сервер запущен на порту {port}")
     server.serve_forever()
 
 # --- 2. БАНК И СТАТИСТИКА ---
@@ -80,7 +86,7 @@ async def scanner(bot):
                     prob_home = int(p_data['predictions']['percent']['home'].replace('%','')) / 100
                     comp = p_data['comparison']
                     
-                    # --- ПРАВИЛО SMART-SAFE (Правка 1: Форма 65%) ---
+                    # ПРАВИЛО SMART-SAFE: Форма 65%, H2H 50%
                     home_form = int(comp['form']['home'].replace('%',''))
                     h2h_home = int(comp['h2h']['home'].replace('%',''))
                     
@@ -107,12 +113,12 @@ async def scanner(bot):
                         fair_odd = 1 / prob_home
                         edge = (current_p1 / fair_odd) - 1
                         
-                        # --- ПРАВИЛО SMART-SAFE (Правка 2: Перевес 7%) ---
+                        # ПРАВИЛО SMART-SAFE: Перевес 7%
                         if edge >= 0.07:
                             stats = load_stats()
                             bank = stats['bank']
                             
-                            # Адаптивный стейкинг (Пункт 6)
+                            # Адаптивный стейкинг
                             if edge > 0.12 and prob_home > 0.60:
                                 confidence = "ВЫСОКАЯ 🔥"
                                 percent = 0.05
@@ -141,7 +147,7 @@ async def scanner(bot):
                             await bot.send_message(chat_id=ADMIN_ID, text=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
                             await asyncio.sleep(10)
 
-            await asyncio.sleep(1200) # Ожидание 20 минут
+            await asyncio.sleep(1200) 
         except Exception as e:
             logging.error(f"Ошибка сканера: {e}")
             await asyncio.sleep(60)
@@ -168,17 +174,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = load_stats()
-    
     action, amt = query.data.split("_")
     amt = float(amt)
-    
     if action == "win":
         data["bank"] += amt * 0.9
         data["wins"] += 1
     else:
         data["bank"] -= amt
         data["losses"] += 1
-        
     save_stats(data)
     await query.edit_message_text(text=f"{query.message.text}\n\n📊 Итог сохранен! Текущий банк: {round(data['bank'], 2)}₽")
 
@@ -188,14 +191,15 @@ async def post_init(app: Application):
     asyncio.create_task(status_monitor(app.bot))
 
 def main():
-    threading.Thread(target=run_health_server, daemon=True).start()
+    # Запускаем Health-Check сервер ПЕРЕД основным приложением
+    server_thread = threading.Thread(target=run_health_server, daemon=True)
+    server_thread.start()
     
     if not TOKEN:
         logging.error("BOT_TOKEN не найден!")
         return
 
     app = Application.builder().token(TOKEN).post_init(post_init).build()
-    
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CallbackQueryHandler(handle_callback))
