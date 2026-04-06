@@ -47,19 +47,23 @@ def save_stats(stats):
 async def scanner(bot):
     logging.info("🛠 ПРОВЕРКА ЗАПУСКА СКАНЕРА...")
     headers = {
-        'x-rapidapi-host': "api-football-v1.p.rapidapi.com",
-        'x-rapidapi-key': API_KEY
-    }
+    "X-RapidAPI-Key": "твой_ключ_5c73...",
+    "X-RapidAPI-Host": "api-football-beta.p.rapidapi.com"
+}
+
 
     while True:
         try:
             logging.info("📡 Делаю запрос к API Football (Next 15)...")
             # Запрос 1
-            res_fix_response = await asyncio.to_thread(
-                requests.get, "https://api-football-v1.p.rapidapi.com/v3/fixtures?next=15", 
-                headers=headers, timeout=15
-            )
-            
+           res_fix_response = await asyncio.to_thread(
+    requests.get, 
+    "https://api-football-beta.p.rapidapi.com/v3/fixtures?next=15", 
+    headers=headers, 
+    timeout=15
+)
+
+        
             logging.info(f"Статус ответа API: {res_fix_response.status_code}")
             res_fix = res_fix_response.json()
             
