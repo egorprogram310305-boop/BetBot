@@ -60,7 +60,7 @@ async def scanner(bot):
             # Запрос 1: Список ближайших матчей (Хост v1 + версия v3)
             res_fix_response = await asyncio.to_thread(
                 requests.get, 
-                "https://api-football-v1.p.rapidapi.com/v3/fixtures?next=15", 
+                "https://api-football-v1.p.rapidapi.com/v3/fixtures?live=all", 
                 headers=headers, 
                 timeout=15
             )
