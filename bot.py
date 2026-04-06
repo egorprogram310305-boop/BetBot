@@ -14,7 +14,7 @@ logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=lo
 
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_ID")
-API_KEY = os.getenv("API_KEY") # ПРОВЕРЬ ЭТО В RENDER!
+API_KEY = os.getenv("API_KEY") 
 STATS_FILE = "stats.json"
 
 # --- 1. СЕРВЕР ДЛЯ RENDER ---
@@ -43,26 +43,27 @@ def save_stats(stats):
     with open(STATS_FILE, "w") as f:
         json.dump(stats, f)
 
-# --- 3. СКАНЕР (С ДОПОЛНИТЕЛЬНЫМ ЛОГИРОВАНИЕМ) ---
+# --- 3. СКАНЕР ---
 async def scanner(bot):
     logging.info("🛠 ПРОВЕРКА ЗАПУСКА СКАНЕРА...")
+    
+    # Хост заменен на beta для соответствия подписке V3
     headers = {
-    "X-RapidAPI-Key": "твой_ключ_5c73...",
-    "X-RapidAPI-Host": "api-football-beta.p.rapidapi.com"
-}
-
+        "X-RapidAPI-Key": API_KEY if API_KEY else "5c73195518msh8bbf4b9493e4852p1c74fcjsn4aad2537ebd2",
+        "X-RapidAPI-Host": "api-football-beta.p.rapidapi.com"
+    }
 
     while True:
         try:
             logging.info("📡 Делаю запрос к API Football (Next 15)...")
-            # Запрос 1
-           res_fix_response = await asyncio.to_thread(
-    requests.get, 
-    "https://api-football-beta.p.rapidapi.com/v3/fixtures?next=15", 
-    headers=headers, 
-    timeout=15
-)
-
+            
+            # Запрос 1: Список ближайших матчей (Хост исправлен)
+            res_fix_response = await asyncio.to_thread(
+                requests.get, 
+                "https://api-football-beta.p.rapidapi.com/v3/fixtures?next=15", 
+                headers=headers, 
+                timeout=15
+            )
         
             logging.info(f"Статус ответа API: {res_fix_response.status_code}")
             res_fix = res_fix_response.json()
@@ -72,9 +73,9 @@ async def scanner(bot):
                 for match in res_fix["response"]:
                     f_id = match['fixture']['id']
                     
-                    # Запрос 2: Прогнозы
+                    # Запрос 2: Прогнозы (Хост исправлен на beta)
                     res_pred_response = await asyncio.to_thread(
-                        requests.get, f"https://api-football-v1.p.rapidapi.com/v3/predictions?fixture={f_id}", 
+                        requests.get, f"https://api-football-beta.p.rapidapi.com/v3/predictions?fixture={f_id}", 
                         headers=headers
                     )
                     res_pred = res_pred_response.json()
@@ -84,13 +85,13 @@ async def scanner(bot):
                     prob_home = int(p_data['predictions']['percent']['home'].replace('%','')) / 100
                     comp = p_data['comparison']
                     
-                    # Фильтр Smart-Safe
+                    # Фильтр стратегии
                     if int(comp['form']['home'].replace('%','')) < 65 or int(comp['h2h']['home'].replace('%','')) < 50:
                         continue
 
-                    # Запрос 3: Кэфы
+                    # Запрос 3: Коэффициенты (Хост исправлен на beta)
                     res_odds_response = await asyncio.to_thread(
-                        requests.get, f"https://api-football-v1.p.rapidapi.com/v3/odds?fixture={f_id}", 
+                        requests.get, f"https://api-football-beta.p.rapidapi.com/v3/odds?fixture={f_id}", 
                         headers=headers
                     )
                     res_odds = res_odds_response.json()
@@ -128,7 +129,7 @@ async def scanner(bot):
                             await bot.send_message(chat_id=ADMIN_ID, text=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
                             await asyncio.sleep(5)
             else:
-                logging.info("API не вернул матчей в 'response'. Возможно, пауза в лигах.")
+                logging.info("API не вернул матчей. Возможно, сейчас нет активных игр.")
 
             logging.info("😴 Сканирование завершено. Жду 20 минут...")
             await asyncio.sleep(1200) 
@@ -165,7 +166,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- 5. ГЛАВНЫЙ ЗАПУСК ---
 async def post_init(app: Application):
-    # Явный запуск задач
     logging.info("Инициализация фоновых задач...")
     asyncio.create_task(scanner(app.bot))
     asyncio.create_task(status_monitor(app.bot))
