@@ -18,18 +18,22 @@ ADMIN_ID = os.getenv("ADMIN_ID")
 API_KEY = os.getenv("API_KEY")
 STATS_FILE = "stats.json"
 
-# --- 1. СЕРВЕР ДЛЯ RENDER (Health Check) ---
+# --- 1. СЕРВЕР ДЛЯ RENDER (Исправлен для ошибки 501) ---
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/html')
-        self.end_headers()
-        self.wfile.write(b"OK")
+        try:
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b"OK") # Робот увидит этот ответ и успокоится
+        except Exception as e:
+            logging.error(f"Ошибка сервера Health-Check: {e}")
+
     def log_message(self, format, *args):
-        return
+        return # Отключаем лишний лог запросов
 
 def run_health_server():
-    # Render автоматически подставляет PORT. Если нет - 10000.
+    # Порт берем из системы или 10000
     port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(('0.0.0.0', port), HealthHandler)
     logging.info(f"🌍 Health-Check сервер запущен на порту {port}")
@@ -57,7 +61,7 @@ async def scanner(bot):
 
     while True:
         try:
-            # Запрос матчей
+            # 1. Поиск ближайших матчей
             res_fix_response = await asyncio.to_thread(
                 requests.get, "https://api-football-v1.p.rapidapi.com/v3/fixtures?next=15", 
                 headers=headers, timeout=15
@@ -68,7 +72,7 @@ async def scanner(bot):
                 for match in res_fix["response"]:
                     f_id = match['fixture']['id']
                     
-                    # Прогнозы
+                    # 2. Прогнозы (Predictions)
                     res_pred_response = await asyncio.to_thread(
                         requests.get, f"https://api-football-v1.p.rapidapi.com/v3/predictions?fixture={f_id}", 
                         headers=headers
@@ -84,7 +88,7 @@ async def scanner(bot):
                     if int(comp['form']['home'].replace('%','')) < 65 or int(comp['h2h']['home'].replace('%','')) < 50:
                         continue
 
-                    # Коэффициенты
+                    # 3. Коэффициенты (Odds)
                     res_odds_response = await asyncio.to_thread(
                         requests.get, f"https://api-football-v1.p.rapidapi.com/v3/odds?fixture={f_id}", 
                         headers=headers
@@ -107,7 +111,7 @@ async def scanner(bot):
                             stats = load_stats()
                             bank = stats['bank']
                             
-                            # Уверенность
+                            # Адаптивный стейкинг (Пункт 6)
                             if edge > 0.12 and prob_home > 0.60:
                                 conf, perc = "ВЫСОКАЯ 🔥", 0.05
                             elif edge >= 0.09:
@@ -147,7 +151,7 @@ async def status_monitor(bot):
         await asyncio.sleep(3600)
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Бот Monster PRO активен!")
+    await update.message.reply_text("✅ Бот Monster PRO активен и ищет сигналы!")
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d = load_stats()
@@ -173,12 +177,20 @@ async def post_init(app: Application):
     asyncio.create_task(status_monitor(app.bot))
 
 def main():
-    threading.Thread(target=run_health_server, daemon=True).start()
-    if not TOKEN: return
+    # Запускаем сервер в отдельном потоке
+    server_thread = threading.Thread(target=run_health_server, daemon=True)
+    server_thread.start()
+    
+    if not TOKEN:
+        logging.error("BOT_TOKEN не найден!")
+        return
+
     app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CallbackQueryHandler(handle_callback))
+    
+    logging.info("🤖 Бот запущен и готов к работе.")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
