@@ -43,38 +43,35 @@ def save_stats(stats):
     with open(STATS_FILE, "w") as f:
         json.dump(stats, f)
 
-# --- 3. СКАНЕР ---
+# --- 3. СКАНЕР (Оптимизированные фильтры) ---
 async def scanner(bot):
-    logging.info("🛠 ПРОВЕРКА ЗАПУСКА СКАНЕРА...")
+    logging.info("🛠 СКАНЕР ЗАПУЩЕН С ГИБКИМИ ФИЛЬТРАМИ...")
     
-    # Прямой API-ключ. strip() защитит от случайных пробелов
+    # Твой подтвержденный ключ API-Sports
     current_key = API_KEY.strip() if API_KEY else "80ec2103f7e47b2294435a50b57ba4eb"
-    
-    headers = {
-        "x-apisports-key": current_key
-    }
+    headers = {"x-apisports-key": current_key}
 
     while True:
         try:
-            logging.info("📡 Делаю запрос к ПРЯМОМУ API Football (Next 15)...")
-            
-            # Запрос 1: Прямая ссылка API-Sports
+            # Увеличили глубину поиска до 45 матчей
+            logging.info("📡 Сканирую 45 ближайших матчей...")
             res_fix_response = await asyncio.to_thread(
                 requests.get, 
-                "https://v3.football.api-sports.io/fixtures?next=15", 
+                "https://v3.football.api-sports.io/fixtures?next=45", 
                 headers=headers, 
                 timeout=15
             )
-        
-            logging.info(f"Статус ответа API: {res_fix_response.status_code}")
+            
             res_fix = res_fix_response.json()
             
             if "response" in res_fix and res_fix["response"]:
-                logging.info(f"Найдено матчей для анализа: {len(res_fix['response'])}")
+                matches_found = len(res_fix["response"])
+                logging.info(f"Найдено {matches_found} матчей. Начинаю анализ...")
+                
                 for match in res_fix["response"]:
                     f_id = match['fixture']['id']
                     
-                    # Запрос 2: Прогнозы (Прямая ссылка)
+                    # Прогнозы
                     res_pred_response = await asyncio.to_thread(
                         requests.get, f"https://v3.football.api-sports.io/predictions?fixture={f_id}", 
                         headers=headers
@@ -86,11 +83,15 @@ async def scanner(bot):
                     prob_home = int(p_data['predictions']['percent']['home'].replace('%','')) / 100
                     comp = p_data['comparison']
                     
-                    # Фильтр стратегии
-                    if int(comp['form']['home'].replace('%','')) < 65 or int(comp['h2h']['home'].replace('%','')) < 50:
+                    # --- ОБНОВЛЕННЫЕ ФИЛЬТРЫ ---
+                    form_home = int(comp['form']['home'].replace('%',''))
+                    h2h_home = int(comp['h2h']['home'].replace('%',''))
+                    
+                    # Форма > 60%, H2H > 45%
+                    if form_home < 60 or h2h_home < 45:
                         continue
 
-                    # Запрос 3: Коэффициенты (Прямая ссылка)
+                    # Коэффициенты
                     res_odds_response = await asyncio.to_thread(
                         requests.get, f"https://v3.football.api-sports.io/odds?fixture={f_id}", 
                         headers=headers
@@ -104,15 +105,19 @@ async def scanner(bot):
                     
                     current_p1 = next((float(o['odd']) for o in market['values'] if o['value'] == 'Home'), None)
                     
-                    if current_p1 and 1.85 <= current_p1 <= 2.80:
+                    # Кэф в диапазоне 1.80 - 2.90 (чуть расширили)
+                    if current_p1 and 1.80 <= current_p1 <= 2.90:
                         fair_odd = 1 / prob_home
                         edge = (current_p1 / fair_odd) - 1
                         
-                        if edge >= 0.07:
+                        # Минимальный перевес теперь 5% (0.05)
+                        if edge >= 0.05:
                             stats = load_stats()
                             bank = stats['bank']
-                            if edge > 0.12 and prob_home > 0.60: conf, perc = "ВЫСОКАЯ 🔥", 0.05
-                            elif edge >= 0.09: conf, perc = "СРЕДНЯЯ ⚡️", 0.04
+                            
+                            # Категории уверенности
+                            if edge > 0.10 and prob_home > 0.60: conf, perc = "ВЫСОКАЯ 🔥", 0.05
+                            elif edge >= 0.07: conf, perc = "СРЕДНЯЯ ⚡️", 0.04
                             else: conf, perc = "УМЕРЕННАЯ 📈", 0.03
                             
                             bet_amount = round(bank * perc, 2)
@@ -127,30 +132,27 @@ async def scanner(bot):
                             )
                             kb = [[InlineKeyboardButton("✅ ЗАШЛО", callback_data=f"win_{bet_amount}"),
                                    InlineKeyboardButton("❌ МИМО", callback_data=f"loss_{bet_amount}")]]
+                            
                             await bot.send_message(chat_id=ADMIN_ID, text=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
-                            await asyncio.sleep(5)
-            else:
-                logging.info("API не вернул матчей. Возможно, сейчас нет подходящих игр.")
-
-            logging.info("😴 Сканирование завершено. Жду 20 минут...")
+                            await asyncio.sleep(5) # Защита от спама в ТГ
+            
+            logging.info("😴 Цикл завершен. Жду 20 минут...")
             await asyncio.sleep(1200) 
         except Exception as e:
-            logging.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА СКАНЕРА: {e}")
+            logging.error(f"❌ ОШИБКА СКАНЕРА: {e}")
             await asyncio.sleep(60)
 
-# --- 4. МОНИТОРИНГ ---
+# --- 4. МОНИТОРИНГ И КОМАНДЫ (БЕЗ ИЗМЕНЕНИЙ) ---
 async def status_monitor(bot):
     while True:
         try:
             if ADMIN_ID:
-                time_now = datetime.now().strftime('%H:%M')
-                await bot.send_message(chat_id=ADMIN_ID, text=f"🔔 Бот активен 🟢 [{time_now}]")
+                await bot.send_message(chat_id=ADMIN_ID, text=f"🔔 Monster PRO в поиске сигналов... 🟢")
         except: pass
         await asyncio.sleep(3600)
 
-# Команды
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Бот Monster PRO запущен и сканирует через прямой API!")
+    await update.message.reply_text("✅ Бот Monster PRO запущен! Ожидайте лучшие сигналы.")
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d = load_stats()
@@ -165,9 +167,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_stats(data)
     await query.edit_message_text(text=f"{query.message.text}\n\n📊 Статистика обновлена!")
 
-# --- 5. ГЛАВНЫЙ ЗАПУСК ---
 async def post_init(app: Application):
-    logging.info("Инициализация фоновых задач...")
     asyncio.create_task(scanner(app.bot))
     asyncio.create_task(status_monitor(app.bot))
 
@@ -178,7 +178,6 @@ def main():
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CallbackQueryHandler(handle_callback))
-    logging.info("🚀 ЗАПУСК POLLИНГА...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
