@@ -47,20 +47,20 @@ def save_stats(stats):
 async def scanner(bot):
     logging.info("🛠 ПРОВЕРКА ЗАПУСКА СКАНЕРА...")
     
-    # Хост заменен на beta для соответствия подписке V3
+    # Используем хост v1, который виден в твоей аналитике
     headers = {
         "X-RapidAPI-Key": API_KEY if API_KEY else "5c73195518msh8bbf4b9493e4852p1c74fcjsn4aad2537ebd2",
-        "X-RapidAPI-Host": "api-football-beta.p.rapidapi.com"
+        "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"
     }
 
     while True:
         try:
             logging.info("📡 Делаю запрос к API Football (Next 15)...")
             
-            # Запрос 1: Список ближайших матчей (Хост исправлен)
+            # Запрос 1: Список ближайших матчей (Хост v1 + версия v3)
             res_fix_response = await asyncio.to_thread(
                 requests.get, 
-                "https://api-football-beta.p.rapidapi.com/v3/fixtures?next=15", 
+                "https://api-football-v1.p.rapidapi.com/v3/fixtures?next=15", 
                 headers=headers, 
                 timeout=15
             )
@@ -73,9 +73,9 @@ async def scanner(bot):
                 for match in res_fix["response"]:
                     f_id = match['fixture']['id']
                     
-                    # Запрос 2: Прогнозы (Хост исправлен на beta)
+                    # Запрос 2: Прогнозы (Хост v1 + версия v3)
                     res_pred_response = await asyncio.to_thread(
-                        requests.get, f"https://api-football-beta.p.rapidapi.com/v3/predictions?fixture={f_id}", 
+                        requests.get, f"https://api-football-v1.p.rapidapi.com/v3/predictions?fixture={f_id}", 
                         headers=headers
                     )
                     res_pred = res_pred_response.json()
@@ -89,9 +89,9 @@ async def scanner(bot):
                     if int(comp['form']['home'].replace('%','')) < 65 or int(comp['h2h']['home'].replace('%','')) < 50:
                         continue
 
-                    # Запрос 3: Коэффициенты (Хост исправлен на beta)
+                    # Запрос 3: Коэффициенты (Хост v1 + версия v3)
                     res_odds_response = await asyncio.to_thread(
-                        requests.get, f"https://api-football-beta.p.rapidapi.com/v3/odds?fixture={f_id}", 
+                        requests.get, f"https://api-football-v1.p.rapidapi.com/v3/odds?fixture={f_id}", 
                         headers=headers
                     )
                     res_odds = res_odds_response.json()
@@ -129,7 +129,7 @@ async def scanner(bot):
                             await bot.send_message(chat_id=ADMIN_ID, text=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
                             await asyncio.sleep(5)
             else:
-                logging.info("API не вернул матчей. Возможно, сейчас нет активных игр.")
+                logging.info("API не вернул матчей. Возможно, сейчас нет активных игр или подписка активируется.")
 
             logging.info("😴 Сканирование завершено. Жду 20 минут...")
             await asyncio.sleep(1200) 
