@@ -12,34 +12,26 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 # Настройка логирования
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# Переменные окружения
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_ID")
-API_KEY = os.getenv("API_KEY")
+API_KEY = os.getenv("API_KEY") # ПРОВЕРЬ ЭТО В RENDER!
 STATS_FILE = "stats.json"
 
-# --- 1. СЕРВЕР ДЛЯ RENDER (Исправлен для ошибки 501) ---
+# --- 1. СЕРВЕР ДЛЯ RENDER ---
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        try:
-            self.send_response(200)
-            self.send_header('Content-type', 'text/plain')
-            self.end_headers()
-            self.wfile.write(b"OK") # Робот увидит этот ответ и успокоится
-        except Exception as e:
-            logging.error(f"Ошибка сервера Health-Check: {e}")
-
-    def log_message(self, format, *args):
-        return # Отключаем лишний лог запросов
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, format, *args): return
 
 def run_health_server():
-    # Порт берем из системы или 10000
     port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(('0.0.0.0', port), HealthHandler)
-    logging.info(f"🌍 Health-Check сервер запущен на порту {port}")
     server.serve_forever()
 
-# --- 2. БАНК И СТАТИСТИКА ---
+# --- 2. БАНК ---
 def load_stats():
     if os.path.exists(STATS_FILE):
         with open(STATS_FILE, "r") as f:
@@ -51,9 +43,9 @@ def save_stats(stats):
     with open(STATS_FILE, "w") as f:
         json.dump(stats, f)
 
-# --- 3. СКАНЕР (Аналитика: Smart-Safe Mode) ---
+# --- 3. СКАНЕР (С ДОПОЛНИТЕЛЬНЫМ ЛОГИРОВАНИЕМ) ---
 async def scanner(bot):
-    logging.info("🚀 Monster PRO: Smart-Safe сканирование запущено...")
+    logging.info("🛠 ПРОВЕРКА ЗАПУСКА СКАНЕРА...")
     headers = {
         'x-rapidapi-host': "api-football-v1.p.rapidapi.com",
         'x-rapidapi-key': API_KEY
@@ -61,18 +53,22 @@ async def scanner(bot):
 
     while True:
         try:
-            # 1. Поиск ближайших матчей
+            logging.info("📡 Делаю запрос к API Football (Next 15)...")
+            # Запрос 1
             res_fix_response = await asyncio.to_thread(
                 requests.get, "https://api-football-v1.p.rapidapi.com/v3/fixtures?next=15", 
                 headers=headers, timeout=15
             )
+            
+            logging.info(f"Статус ответа API: {res_fix_response.status_code}")
             res_fix = res_fix_response.json()
             
-            if "response" in res_fix:
+            if "response" in res_fix and res_fix["response"]:
+                logging.info(f"Найдено матчей для анализа: {len(res_fix['response'])}")
                 for match in res_fix["response"]:
                     f_id = match['fixture']['id']
                     
-                    # 2. Прогнозы (Predictions)
+                    # Запрос 2: Прогнозы
                     res_pred_response = await asyncio.to_thread(
                         requests.get, f"https://api-football-v1.p.rapidapi.com/v3/predictions?fixture={f_id}", 
                         headers=headers
@@ -84,11 +80,11 @@ async def scanner(bot):
                     prob_home = int(p_data['predictions']['percent']['home'].replace('%','')) / 100
                     comp = p_data['comparison']
                     
-                    # ФИЛЬТР: Форма 65%, H2H 50%
+                    # Фильтр Smart-Safe
                     if int(comp['form']['home'].replace('%','')) < 65 or int(comp['h2h']['home'].replace('%','')) < 50:
                         continue
 
-                    # 3. Коэффициенты (Odds)
+                    # Запрос 3: Кэфы
                     res_odds_response = await asyncio.to_thread(
                         requests.get, f"https://api-football-v1.p.rapidapi.com/v3/odds?fixture={f_id}", 
                         headers=headers
@@ -106,18 +102,12 @@ async def scanner(bot):
                         fair_odd = 1 / prob_home
                         edge = (current_p1 / fair_odd) - 1
                         
-                        # ФИЛЬТР: Валуй 7%
                         if edge >= 0.07:
                             stats = load_stats()
                             bank = stats['bank']
-                            
-                            # Адаптивный стейкинг (Пункт 6)
-                            if edge > 0.12 and prob_home > 0.60:
-                                conf, perc = "ВЫСОКАЯ 🔥", 0.05
-                            elif edge >= 0.09:
-                                conf, perc = "СРЕДНЯЯ ⚡️", 0.04
-                            else:
-                                conf, perc = "УМЕРЕННАЯ 📈", 0.03
+                            if edge > 0.12 and prob_home > 0.60: conf, perc = "ВЫСОКАЯ 🔥", 0.05
+                            elif edge >= 0.09: conf, perc = "СРЕДНЯЯ ⚡️", 0.04
+                            else: conf, perc = "УМЕРЕННАЯ 📈", 0.03
                             
                             bet_amount = round(bank * perc, 2)
                             text = (
@@ -127,20 +117,22 @@ async def scanner(bot):
                                 f"📊 Вероятность: {int(prob_home*100)}%\n"
                                 f"🟢 Перевес: +{int(edge*100)}%\n"
                                 f"🛡 Уверенность: **{conf}**\n"
-                                f"💰 Ставка: **{bet_amount}₽** ({int(perc*100)}%)"
+                                f"💰 Ставка: **{bet_amount}₽**"
                             )
                             kb = [[InlineKeyboardButton("✅ ЗАШЛО", callback_data=f"win_{bet_amount}"),
                                    InlineKeyboardButton("❌ МИМО", callback_data=f"loss_{bet_amount}")]]
-                            
                             await bot.send_message(chat_id=ADMIN_ID, text=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
-                            await asyncio.sleep(10)
+                            await asyncio.sleep(5)
+            else:
+                logging.info("API не вернул матчей в 'response'. Возможно, пауза в лигах.")
 
+            logging.info("😴 Сканирование завершено. Жду 20 минут...")
             await asyncio.sleep(1200) 
         except Exception as e:
-            logging.error(f"Ошибка сканера: {e}")
+            logging.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА СКАНЕРА: {e}")
             await asyncio.sleep(60)
 
-# --- 4. МОНИТОРИНГ И КОМАНДЫ ---
+# --- 4. МОНИТОРИНГ ---
 async def status_monitor(bot):
     while True:
         try:
@@ -150,47 +142,38 @@ async def status_monitor(bot):
         except: pass
         await asyncio.sleep(3600)
 
+# Команды
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Бот Monster PRO активен и ищет сигналы!")
+    await update.message.reply_text("✅ Бот Monster PRO запущен и сканирует!")
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d = load_stats()
-    await update.message.reply_text(f"📊 Банк: {d['bank']}₽\n✅ П: {d['wins']} | ❌ Л: {d['losses']}")
+    await update.message.reply_text(f"📊 Банк: {d['bank']}₽\nПобед: {d['wins']} | Поражений: {d['losses']}")
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    data = load_stats()
-    action, amt = query.data.split("_")
-    amt = float(amt)
-    if action == "win":
-        data["bank"] += amt * 0.9
-        data["wins"] += 1
-    else:
-        data["bank"] -= amt
-        data["losses"] += 1
+    data = load_stats(); action, amt = query.data.split("_"); amt = float(amt)
+    if action == "win": data["bank"] += amt * 0.9; data["wins"] += 1
+    else: data["bank"] -= amt; data["losses"] += 1
     save_stats(data)
-    await query.edit_message_text(text=f"{query.message.text}\n\n📊 Итог сохранен!")
+    await query.edit_message_text(text=f"{query.message.text}\n\n📊 Статистика обновлена!")
 
+# --- 5. ГЛАВНЫЙ ЗАПУСК ---
 async def post_init(app: Application):
+    # Явный запуск задач
+    logging.info("Инициализация фоновых задач...")
     asyncio.create_task(scanner(app.bot))
     asyncio.create_task(status_monitor(app.bot))
 
 def main():
-    # Запускаем сервер в отдельном потоке
-    server_thread = threading.Thread(target=run_health_server, daemon=True)
-    server_thread.start()
-    
-    if not TOKEN:
-        logging.error("BOT_TOKEN не найден!")
-        return
-
+    threading.Thread(target=run_health_server, daemon=True).start()
+    if not TOKEN: return
     app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CallbackQueryHandler(handle_callback))
-    
-    logging.info("🤖 Бот запущен и готов к работе.")
+    logging.info("🚀 ЗАПУСК POLLИНГА...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
