@@ -24,7 +24,7 @@ FOOTBALL_KEYS = [
 FOOTBALL_KEYS = [key for key in FOOTBALL_KEYS if key]
 current_key_index = 0
 
-# --- 1. СЕРВЕР ДЛЯ RENDER ---
+# --- 1. СЕРВЕР ДЛЯ RENDER (Health Check) ---
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -38,7 +38,7 @@ def run_health_server():
     server = HTTPServer(('0.0.0.0', port), HealthHandler)
     server.serve_forever()
 
-# --- 2. БАНК ---
+# --- 2. УПРАВЛЕНИЕ СТАТИСТИКОЙ ---
 def load_stats():
     if os.path.exists(STATS_FILE):
         with open(STATS_FILE, "r") as f:
@@ -52,7 +52,7 @@ def save_stats(stats):
     with open(STATS_FILE, "w") as f:
         json.dump(stats, f)
 
-# --- УМНАЯ ФУНКЦИЯ ЗАПРОСОВ С РОТАЦИЕЙ КЛЮЧЕЙ ---
+# --- 3. РОТАЦИЯ API КЛЮЧЕЙ ---
 def fetch_api_data(url):
     global current_key_index
     if not FOOTBALL_KEYS:
@@ -68,7 +68,7 @@ def fetch_api_data(url):
         try:
             response = requests.get(url, headers=headers, timeout=15)
             if response.status_code == 429 or "requests limit reached" in response.text.lower():
-                logging.warning(f"⚠️ Ключ №{current_key_index + 1} исчерпал лимит. Переключаюсь...")
+                logging.warning(f"⚠️ Ключ №{current_key_index + 1} исчерпан. Переключаюсь...")
                 current_key_index = (current_key_index + 1) % len(FOOTBALL_KEYS)
                 continue
             return response.json()
@@ -77,139 +77,127 @@ def fetch_api_data(url):
             return None
     return None
 
-# --- 3. ОБНОВЛЕННЫЙ СКАНЕР (NEXT=100) ---
+# --- 4. ОПТИМИЗИРОВАННЫЙ СКАНЕР ---
 async def scanner(bot):
     logging.info("🛠 MONSTER PRO ULTIMATE v2.8 — СКАНЕР ЗАПУЩЕН")
-    logging.info(f"🔑 Доступно ключей для ротации: {len(FOOTBALL_KEYS)}")
-
+    
     while True:
         try:
-            logging.info("[SYSTEM] Запуск сканирования 100 предстоящих матчей...")
-            sent_signals = 0
-
-            # ✅ ИСПОЛЬЗУЕМ NEXT=100 ДЛЯ БУДУЩИХ ИГР
+            logging.info("[SYSTEM] Запуск сканирования 60 ближайших матчей...")
             res_fix = await asyncio.to_thread(
                 fetch_api_data, 
-                "https://v3.football.api-sports.io/fixtures?next=100"
+                "https://v3.football.api-sports.io/fixtures?next=60" # Уменьшил до 60 для стабильности
             )
 
             if not res_fix or "response" not in res_fix or not res_fix["response"]:
-                logging.info("[SYSTEM] Цикл завершен. Будущих матчей не найдено.")
-                await asyncio.sleep(1200)
+                logging.info("[SYSTEM] Матчей не найдено. Жду 15 минут...")
+                await asyncio.sleep(900)
                 continue
 
             matches = res_fix["response"]
-            logging.info(f"Найдено {len(matches)} предстоящих матчей. Начинаю анализ...")
+            sent_signals = 0
 
             for match in matches:
                 f_id = match['fixture']['id']
-                home_name = match['teams']['home']['name']
-                away_name = match['teams']['away']['name']
+                home_n = match['teams']['home']['name']
+                away_n = match['teams']['away']['name']
 
-                # Прогнозы
-                res_pred = await asyncio.to_thread(fetch_api_data, f"https://v3.football.api-sports.io/predictions?fixture={f_id}")
-                if not res_pred or not res_pred.get("response"):
-                    continue
-
-                p_data = res_pred["response"][0]
-                comp = p_data.get('comparison', {})
-                advice = p_data['predictions'].get('advice', '')
-
-                try:
-                    prob_home = int(p_data['predictions']['percent']['home'].replace('%','')) / 100
-                    prob_away = int(p_data['predictions']['percent']['away'].replace('%','')) / 100
-                except: continue
-
-                # Коэффициенты
+                # ШАГ 1: Сначала проверяем только коэффициенты (Bookmaker ID 8 - Bet365 или 1 - 1xBet)
                 res_odds = await asyncio.to_thread(fetch_api_data, f"https://v3.football.api-sports.io/odds?fixture={f_id}&bookmakers=8")
                 bookie = None
                 if res_odds and res_odds.get("response"):
                     bookmakers_list = res_odds["response"][0].get("bookmakers", [])
-                    bookie = next((b for b in bookmakers_list if b.get("id") == 8), None)
-
-                if not bookie:
-                    res_odds = await asyncio.to_thread(fetch_api_data, f"https://v3.football.api-sports.io/odds?fixture={f_id}&bookmakers=1")
-                    if res_odds and res_odds.get("response"):
-                        bookmakers_list = res_odds["response"][0].get("bookmakers", [])
-                        bookie = next((b for b in bookmakers_list if b.get("id") == 1), None)
-
-                if not bookie: continue
-
-                market_1x2 = next((m for m in bookie.get('bets', []) if m.get('id') == 1), None)
+                    bookie = next((b for b in bookmakers_list if b.get("id") in [1, 8]), None)
                 
-                # --- ЛОГИКА П1 ---
-                current_home = next((float(o['odd']) for o in market_1x2.get('values', []) if o.get('value') == 'Home'), None) if market_1x2 else None
-                if current_home and 1.70 <= current_home <= 2.50:
-                    form_home = int(comp.get('form', {}).get('home', '0%').replace('%',''))
-                    h2h_home = int(comp.get('h2h', {}).get('home', '0%').replace('%',''))
-                    if form_home >= 55 and h2h_home >= 50:
-                        fair_odd = 1 / prob_home if prob_home > 0 else 999
-                        edge = (current_home / fair_odd) - 1
-                        if edge >= 0.06:
-                            await send_signal(bot, home_name, away_name, "П1", current_home, edge)
-                            sent_signals += 1
-                            continue
+                if not bookie: continue # Пропускаем, если кэфов еще нет
 
-                # --- ЛОГИКА П2 ---
-                current_away = next((float(o['odd']) for o in market_1x2.get('values', []) if o.get('value') == 'Away'), None) if market_1x2 else None
-                if current_away and 1.70 <= current_away <= 2.50:
-                    form_away = int(comp.get('form', {}).get('away', '0%').replace('%',''))
-                    h2h_away = int(comp.get('h2h', {}).get('away', '0%').replace('%',''))
-                    if form_away >= 55 and h2h_away >= 50:
-                        fair_odd = 1 / prob_away if prob_away > 0 else 999
-                        edge = (current_away / fair_odd) - 1
-                        if edge >= 0.06:
-                            await send_signal(bot, home_name, away_name, "П2", current_away, edge)
-                            sent_signals += 1
-                            continue
-
-                # --- ЛОГИКА ТБ 2.5 ---
+                # Извлекаем маркеты
+                market_1x2 = next((m for m in bookie.get('bets', []) if m.get('id') == 1), None)
                 market_over = next((m for m in bookie.get('bets', []) if m.get('id') == 3 or 'Over/Under' in m.get('name', '')), None)
-                current_over = next((float(o['odd']) for o in market_over.get('values', []) if o.get('value') == 'Over 2.5' or 'Over 2.5' in str(o.get('value', ''))), None) if market_over else None
-                if "Over 2.5 goals" in advice and current_over and 1.70 <= current_over <= 2.30:
-                    await send_signal(bot, home_name, away_name, "ТБ 2.5", current_over, 0)
+
+                # Проверяем, есть ли смысл анализировать этот матч дальше (подходят ли КФ)
+                curr_h = next((float(o['odd']) for o in market_1x2.get('values', []) if o.get('value') == 'Home'), 0) if market_1x2 else 0
+                curr_a = next((float(o['odd']) for o in market_1x2.get('values', []) if o.get('value') == 'Away'), 0) if market_1x2 else 0
+                curr_ov = next((float(o['odd']) for o in market_1x2.get('values', []) if 'Over 2.5' in str(o.get('value', ''))), 0) if market_over else 0
+
+                # Если ни один КФ не в нашем диапазоне, не тратим запрос на прогноз
+                if not (1.70 <= curr_h <= 2.50 or 1.70 <= curr_a <= 2.50 or 1.70 <= curr_ov <= 2.30):
+                    continue
+
+                # ШАГ 2: Только теперь запрашиваем прогноз
+                res_pred = await asyncio.to_thread(fetch_api_data, f"https://v3.football.api-sports.io/predictions?fixture={f_id}")
+                if not res_pred or not res_pred.get("response"): continue
+                
+                p_data = res_pred["response"][0]
+                comp = p_data.get('comparison', {})
+                advice = p_data['predictions'].get('advice', '')
+                
+                try:
+                    prob_h = int(p_data['predictions']['percent']['home'].replace('%','')) / 100
+                    prob_a = int(p_data['predictions']['percent']['away'].replace('%','')) / 100
+                    form_h = int(comp.get('form', {}).get('home', '0%').replace('%',''))
+                    form_a = int(comp.get('form', {}).get('away', '0%').replace('%',''))
+                    h2h_h = int(comp.get('h2h', {}).get('home', '0%').replace('%',''))
+                    h2h_a = int(comp.get('h2h', {}).get('away', '0%').replace('%',''))
+                except: continue
+
+                # ПРОВЕРКА ЛОГИКИ П1
+                if 1.70 <= curr_h <= 2.50 and form_h >= 55 and h2h_h >= 50:
+                    edge = (curr_h / (1/prob_h if prob_h > 0 else 99)) - 1
+                    if edge >= 0.06:
+                        await send_signal(bot, home_n, away_n, "П1", curr_h, edge)
+                        sent_signals += 1
+                        continue
+
+                # ПРОВЕРКА ЛОГИКИ П2
+                if 1.70 <= curr_a <= 2.50 and form_a >= 55 and h2h_a >= 50:
+                    edge = (curr_a / (1/prob_a if prob_a > 0 else 99)) - 1
+                    if edge >= 0.06:
+                        await send_signal(bot, home_n, away_n, "П2", curr_a, edge)
+                        sent_signals += 1
+                        continue
+
+                # ПРОВЕРКА ЛОГИКИ ТБ 2.5
+                if "Over 2.5 goals" in advice and 1.70 <= curr_ov <= 2.30:
+                    await send_signal(bot, home_n, away_n, "ТБ 2.5", curr_ov, 0)
                     sent_signals += 1
 
-            logging.info(f"[SYSTEM] Цикл завершен. Отправлено {sent_signals} сигналов. Сон 20 мин.")
+            logging.info(f"[SYSTEM] Цикл завершен. Отправлено сигналов: {sent_signals}. Сон 20 мин.")
             await asyncio.sleep(1200)
 
         except Exception as e:
             logging.error(f"❌ Ошибка в сканере: {e}", exc_info=True)
             await asyncio.sleep(60)
 
-# --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ОТПРАВКИ ---
+# --- 5. ФУНКЦИЯ ОТПРАВКИ СИГНАЛА ---
 async def send_signal(bot, home, away, market, kf, edge):
     stats = load_stats()
     bet_amount = round(stats['bank'] * 0.03, 2)
     text = (
-        f"💳 **MONSTER PRO: BETBOOM EDITION**\n\n"
+        f"💳 **MONSTER PRO: SIGNAL**\n\n"
         f"⚽️ {home} — {away}\n"
         f"🎯 Ставка: **{market}**\n"
-        f"📈 Ориентир КФ: **{kf}**\n"
+        f"📈 КФ: **{kf}**\n"
         f"🟢 Валуйность: **+{int(edge*100)}%**\n"
-        f"⚠️ В BetBoom ставить, если КФ не ниже **{round(kf - 0.05, 2)}**"
+        f"💰 Рекомендуемая ставка: **{bet_amount}₽**"
     )
     kb = [[
         InlineKeyboardButton("✅ ЗАШЛО", callback_data=f"win_{bet_amount}_{kf}"),
         InlineKeyboardButton("❌ МИМО", callback_data=f"loss_{bet_amount}")
     ]]
-    await bot.send_message(chat_id=ADMIN_ID, text=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
-    await asyncio.sleep(3)
+    try:
+        await bot.send_message(chat_id=ADMIN_ID, text=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+    except Exception as e:
+        logging.error(f"Ошибка отправки сообщения: {e}")
+    await asyncio.sleep(2)
 
-# --- ОСТАЛЬНЫЕ КОМАНДЫ ---
-async def status_monitor(bot):
-    while True:
-        try:
-            if ADMIN_ID: await bot.send_message(chat_id=ADMIN_ID, text=f"🔔 Monster PRO v2.8 в поиске... 🟢")
-        except: pass
-        await asyncio.sleep(3600)
-
+# --- 6. ОБРАБОТЧИКИ КОМАНД ---
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Бот запущен! Ищем будущие матчи...")
+    await update.message.reply_text("🚀 Сканер Monster PRO запущен и ищет валуйные ставки!")
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d = load_stats()
-    await update.message.reply_text(f"📊 Банк: {d['bank']}₽\nПобед: {d['wins']} | Поражений: {d['losses']}")
+    await update.message.reply_text(f"📊 **Статистика:**\n💰 Банк: {round(d['bank'], 2)}₽\n✅ Побед: {d['wins']}\n❌ Поражений: {d['losses']}")
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -230,15 +218,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         res = "❌ МИМО"
 
     save_stats(stats)
-    await query.edit_message_text(text=f"{query.message.text}\n\n{res}\n📊 Статистика обновлена!")
+    await query.edit_message_text(text=f"{query.message.text}\n\n{res}\n📊 Банк обновлен!")
 
 async def post_init(app: Application):
     asyncio.create_task(scanner(app.bot))
-    asyncio.create_task(status_monitor(app.bot))
 
 def main():
     threading.Thread(target=run_health_server, daemon=True).start()
-    if not TOKEN: return
+    if not TOKEN: 
+        logging.error("BOT_TOKEN не найден!")
+        return
     app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
@@ -247,3 +236,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
