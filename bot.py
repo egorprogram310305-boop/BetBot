@@ -35,124 +35,279 @@ def run_health_server():
 def load_stats():
     if os.path.exists(STATS_FILE):
         with open(STATS_FILE, "r") as f:
-            try: return json.load(f)
-            except: return {"bank": 1000, "wins": 0, "losses": 0}
+            try: 
+                return json.load(f)
+            except: 
+                return {"bank": 1000, "wins": 0, "losses": 0}
     return {"bank": 1000, "wins": 0, "losses": 0}
 
 def save_stats(stats):
     with open(STATS_FILE, "w") as f:
         json.dump(stats, f)
 
-# --- 3. СКАНЕР (Оптимизированные фильтры) ---
+# --- 3. СКАНЕР (ПОЛНОСТЬЮ ПЕРЕПИСАН ПО ТЗ v2.8) ---
 async def scanner(bot):
-    logging.info("🛠 СКАНЕР ЗАПУЩЕН С ГИБКИМИ ФИЛЬТРАМИ...")
+    logging.info("🛠 MONSTER PRO ULTIMATE v2.8 ЗАПУЩЕН")
     
-    # Твой подтвержденный ключ API-Sports
     current_key = API_KEY.strip() if API_KEY else "80ec2103f7e47b2294435a50b57ba4eb"
     headers = {"x-apisports-key": current_key}
 
     while True:
         try:
-            # Увеличили глубину поиска до 45 матчей
-            logging.info("📡 Сканирую 45 ближайших матчей...")
+            logging.info("[SYSTEM] Запуск сканирования 100 матчей...")
+            sent_signals = 0
+
+            # 1. Получаем 100 ближайших матчей
             res_fix_response = await asyncio.to_thread(
                 requests.get, 
-                "https://v3.football.api-sports.io/fixtures?next=45", 
+                "https://v3.football.api-sports.io/fixtures?next=100", 
                 headers=headers, 
                 timeout=15
             )
-            
             res_fix = res_fix_response.json()
-            
-            if "response" in res_fix and res_fix["response"]:
-                matches_found = len(res_fix["response"])
-                logging.info(f"Найдено {matches_found} матчей. Начинаю анализ...")
-                
-                for match in res_fix["response"]:
-                    f_id = match['fixture']['id']
-                    
-                    # Прогнозы
-                    res_pred_response = await asyncio.to_thread(
-                        requests.get, f"https://v3.football.api-sports.io/predictions?fixture={f_id}", 
-                        headers=headers
-                    )
-                    res_pred = res_pred_response.json()
-                    if not res_pred.get("response"): continue
-                    
-                    p_data = res_pred["response"][0]
-                    prob_home = int(p_data['predictions']['percent']['home'].replace('%','')) / 100
-                    comp = p_data['comparison']
-                    
-                    # --- ОБНОВЛЕННЫЕ ФИЛЬТРЫ ---
-                    form_home = int(comp['form']['home'].replace('%',''))
-                    h2h_home = int(comp['h2h']['home'].replace('%',''))
-                    
-                    # Форма > 60%, H2H > 45%
-                    if form_home < 60 or h2h_home < 45:
-                        continue
 
-                    # Коэффициенты
+            if "response" not in res_fix or not res_fix["response"]:
+                logging.info("[SYSTEM] Цикл завершен. Проверено 0 матчей. Отправлено 0 сигналов.")
+                await asyncio.sleep(1200)
+                continue
+
+            matches = res_fix["response"]
+            logging.info(f"Найдено {len(matches)} матчей. Начинаю полный анализ...")
+
+            for match in matches:
+                f_id = match['fixture']['id']
+                home_name = match['teams']['home']['name']
+                away_name = match['teams']['away']['name']
+
+                # === Прогнозы (один запрос на матч) ===
+                res_pred_response = await asyncio.to_thread(
+                    requests.get, 
+                    f"https://v3.football.api-sports.io/predictions?fixture={f_id}", 
+                    headers=headers
+                )
+                res_pred = res_pred_response.json()
+                if not res_pred.get("response"):
+                    logging.info(f"[REJECTED] {home_name} - {away_name} | Причина: Нет данных прогноза")
+                    continue
+
+                p_data = res_pred["response"][0]
+                comp = p_data.get('comparison', {})
+                advice = p_data['predictions'].get('advice', '')
+
+                # Проценты (только home/away)
+                try:
+                    prob_home = int(p_data['predictions']['percent']['home'].replace('%','')) / 100
+                    prob_away = int(p_data['predictions']['percent']['away'].replace('%','')) / 100
+                except:
+                    logging.info(f"[REJECTED] {home_name} - {away_name} | Причина: Некорректные проценты")
+                    continue
+
+                # === Коэффициенты (приоритет Bet365 id=8 → 1xBet id=1) ===
+                # Сначала пытаемся с Bet365
+                res_odds_response = await asyncio.to_thread(
+                    requests.get, 
+                    f"https://v3.football.api-sports.io/odds?fixture={f_id}&bookmakers=8", 
+                    headers=headers
+                )
+                res_odds = res_odds_response.json()
+
+                bookie = None
+                if res_odds.get("response") and res_odds["response"]:
+                    bookmakers_list = res_odds["response"][0].get("bookmakers", [])
+                    bookie = next((b for b in bookmakers_list if b.get("id") == 8), None)
+
+                # Fallback на 1xBet
+                if not bookie:
                     res_odds_response = await asyncio.to_thread(
-                        requests.get, f"https://v3.football.api-sports.io/odds?fixture={f_id}", 
+                        requests.get, 
+                        f"https://v3.football.api-sports.io/odds?fixture={f_id}&bookmakers=1", 
                         headers=headers
                     )
                     res_odds = res_odds_response.json()
-                    if not res_odds.get("response"): continue
-                    
-                    bookie = res_odds["response"][0]["bookmakers"][0]
-                    market = next((m for m in bookie['bets'] if m['id'] == 1), None)
-                    if not market: continue
-                    
-                    current_p1 = next((float(o['odd']) for o in market['values'] if o['value'] == 'Home'), None)
-                    
-                    # Кэф в диапазоне 1.80 - 2.90 (чуть расширили)
-                    if current_p1 and 1.80 <= current_p1 <= 2.90:
-                        fair_odd = 1 / prob_home
-                        edge = (current_p1 / fair_odd) - 1
-                        
-                        # Минимальный перевес теперь 5% (0.05)
-                        if edge >= 0.05:
+                    if res_odds.get("response") and res_odds["response"]:
+                        bookmakers_list = res_odds["response"][0].get("bookmakers", [])
+                        bookie = next((b for b in bookmakers_list if b.get("id") == 1), None)
+
+                if not bookie:
+                    logging.info(f"[REJECTED] {home_name} - {away_name} | Причина: Нет котировок от Bet365/1xBet")
+                    continue
+
+                # === СЦЕНАРИЙ А: П1 (Home) ===
+                market_1x2 = next((m for m in bookie.get('bets', []) if m.get('id') == 1), None)
+                current_home = None
+                if market_1x2:
+                    current_home = next((float(o['odd']) for o in market_1x2.get('values', []) if o.get('value') == 'Home'), None)
+
+                if current_home and 1.70 <= current_home <= 2.50:
+                    form_home = int(comp.get('form', {}).get('home', '0%').replace('%',''))
+                    h2h_home = int(comp.get('h2h', {}).get('home', '0%').replace('%',''))
+
+                    # Стабильность линии (opening odds в API отсутствуют → считаем текущий кэф стабильным)
+                    stable = True
+
+                    if form_home >= 55 and h2h_home >= 50 and stable:
+                        fair_odd = 1 / prob_home if prob_home > 0 else 999
+                        edge = (current_home / fair_odd) - 1
+
+                        if edge >= 0.06:
+                            # === УСПЕХ П1 ===
                             stats = load_stats()
                             bank = stats['bank']
-                            
-                            # Категории уверенности
-                            if edge > 0.10 and prob_home > 0.60: conf, perc = "ВЫСОКАЯ 🔥", 0.05
-                            elif edge >= 0.07: conf, perc = "СРЕДНЯЯ ⚡️", 0.04
-                            else: conf, perc = "УМЕРЕННАЯ 📈", 0.03
-                            
-                            bet_amount = round(bank * perc, 2)
+                            bet_amount = round(bank * 0.03, 2)
+                            kf_display = current_home
+
                             text = (
-                                f"🔥 **MONSTER PRO: SMART SIGNAL**\n\n"
-                                f"⚽️ {match['teams']['home']['name']} — {match['teams']['away']['name']}\n"
-                                f"📈 КФ: **{current_p1}**\n"
-                                f"📊 Вероятность: {int(prob_home*100)}%\n"
-                                f"🟢 Перевес: +{int(edge*100)}%\n"
-                                f"🛡 Уверенность: **{conf}**\n"
-                                f"💰 Ставка: **{bet_amount}₽**"
+                                f"💳 **MONSTER PRO: BETBOOM EDITION**\n\n"
+                                f"⚽️ {home_name} — {away_name}\n"
+                                f"🎯 Ставка: **П1**\n"
+                                f"📈 Ориентир КФ: **{kf_display}**\n"
+                                f"🟢 Валуйность: **+{int(edge*100)}%**\n"
+                                f"⚠️ В BetBoom ставить, если КФ не ниже **{round(kf_display - 0.05, 2)}**"
                             )
-                            kb = [[InlineKeyboardButton("✅ ЗАШЛО", callback_data=f"win_{bet_amount}"),
-                                   InlineKeyboardButton("❌ МИМО", callback_data=f"loss_{bet_amount}")]]
-                            
-                            await bot.send_message(chat_id=ADMIN_ID, text=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
-                            await asyncio.sleep(5) # Защита от спама в ТГ
-            
-            logging.info("😴 Цикл завершен. Жду 20 минут...")
-            await asyncio.sleep(1200) 
+                            kb = [[
+                                InlineKeyboardButton("✅ ЗАШЛО", callback_data=f"win_{bet_amount}_{kf_display}"),
+                                InlineKeyboardButton("❌ МИМО", callback_data=f"loss_{bet_amount}")
+                            ]]
+
+                            await bot.send_message(
+                                chat_id=ADMIN_ID, 
+                                text=text, 
+                                reply_markup=InlineKeyboardMarkup(kb), 
+                                parse_mode="Markdown"
+                            )
+                            await asyncio.sleep(3)  # защита от rate-limit TG
+                            sent_signals += 1
+
+                            logging.info(f"[MATCH FOUND] {home_name} - {away_name} | Рынок: П1, КФ: {current_home}, Edge: {int(edge*100)}%. Отправка сигнала...")
+                            continue  # переходим к следующему матчу (один сигнал за матч максимум)
+
+                    # === REJECTED (статистика или кэф) ===
+                    if form_home < 55 or h2h_home < 50:
+                        reason = f"Низкая Форма: {form_home}% (нужно 55%)" if form_home < 55 else f"Низкий H2H: {h2h_home}% (нужно 50%)"
+                        logging.info(f"[REJECTED] {home_name} - {away_name} | Причина: {reason}")
+                    else:
+                        logging.info(f"[REJECTED] {home_name} - {away_name} | Статистика ОК, но Edge {int(edge*100)}% ниже порога 6% или КФ вне диапазона")
+
+                # === СЦЕНАРИЙ Б: П2 (Away) ===
+                current_away = None
+                if market_1x2:
+                    current_away = next((float(o['odd']) for o in market_1x2.get('values', []) if o.get('value') == 'Away'), None)
+
+                if current_away and 1.70 <= current_away <= 2.50:
+                    form_away = int(comp.get('form', {}).get('away', '0%').replace('%',''))
+                    h2h_away = int(comp.get('h2h', {}).get('away', '0%').replace('%',''))
+
+                    stable = True
+
+                    if form_away >= 55 and h2h_away >= 50 and stable:
+                        fair_odd = 1 / prob_away if prob_away > 0 else 999
+                        edge = (current_away / fair_odd) - 1
+
+                        if edge >= 0.06:
+                            # === УСПЕХ П2 ===
+                            stats = load_stats()
+                            bank = stats['bank']
+                            bet_amount = round(bank * 0.03, 2)
+                            kf_display = current_away
+
+                            text = (
+                                f"💳 **MONSTER PRO: BETBOOM EDITION**\n\n"
+                                f"⚽️ {home_name} — {away_name}\n"
+                                f"🎯 Ставка: **П2**\n"
+                                f"📈 Ориентир КФ: **{kf_display}**\n"
+                                f"🟢 Валуйность: **+{int(edge*100)}%**\n"
+                                f"⚠️ В BetBoom ставить, если КФ не ниже **{round(kf_display - 0.05, 2)}**"
+                            )
+                            kb = [[
+                                InlineKeyboardButton("✅ ЗАШЛО", callback_data=f"win_{bet_amount}_{kf_display}"),
+                                InlineKeyboardButton("❌ МИМО", callback_data=f"loss_{bet_amount}")
+                            ]]
+
+                            await bot.send_message(
+                                chat_id=ADMIN_ID, 
+                                text=text, 
+                                reply_markup=InlineKeyboardMarkup(kb), 
+                                parse_mode="Markdown"
+                            )
+                            await asyncio.sleep(3)
+                            sent_signals += 1
+
+                            logging.info(f"[MATCH FOUND] {home_name} - {away_name} | Рынок: П2, КФ: {current_away}, Edge: {int(edge*100)}%. Отправка сигнала...")
+                            continue
+
+                    # REJECTED
+                    if form_away < 55 or h2h_away < 50:
+                        reason = f"Низкая Форма: {form_away}% (нужно 55%)" if form_away < 55 else f"Низкий H2H: {h2h_away}% (нужно 50%)"
+                        logging.info(f"[REJECTED] {home_name} - {away_name} | Причина: {reason}")
+                    else:
+                        logging.info(f"[REJECTED] {home_name} - {away_name} | Статистика ОК, но Edge {int(edge*100)}% ниже порога 6% или КФ вне диапазона")
+
+                # === СЦЕНАРИЙ В: ТБ 2.5 ===
+                market_over = next((m for m in bookie.get('bets', []) if m.get('id') == 3 or 'Over/Under' in m.get('name', '')), None)
+                current_over = None
+                if market_over:
+                    current_over = next((float(o['odd']) for o in market_over.get('values', []) if o.get('value') == 'Over 2.5' or 'Over 2.5' in str(o.get('value', ''))), None)
+
+                if "Over 2.5 goals" in advice and current_over and 1.70 <= current_over <= 2.30:
+                    stable = True  # opening odds отсутствуют в API
+
+                    if stable:
+                        # === УСПЕХ ТБ 2.5 (edge не рассчитывается по ТЗ) ===
+                        stats = load_stats()
+                        bank = stats['bank']
+                        bet_amount = round(bank * 0.03, 2)
+                        kf_display = current_over
+
+                        text = (
+                            f"💳 **MONSTER PRO: BETBOOM EDITION**\n\n"
+                            f"⚽️ {home_name} — {away_name}\n"
+                            f"🎯 Ставка: **ТБ 2.5**\n"
+                            f"📈 Ориентир КФ: **{kf_display}**\n"
+                            f"🟢 Валуйность: **+0%** (рекомендация API)\n"
+                            f"⚠️ В BetBoom ставить, если КФ не ниже **{round(kf_display - 0.05, 2)}**"
+                        )
+                        kb = [[
+                            InlineKeyboardButton("✅ ЗАШЛО", callback_data=f"win_{bet_amount}_{kf_display}"),
+                            InlineKeyboardButton("❌ МИМО", callback_data=f"loss_{bet_amount}")
+                        ]]
+
+                        await bot.send_message(
+                            chat_id=ADMIN_ID, 
+                            text=text, 
+                            reply_markup=InlineKeyboardMarkup(kb), 
+                            parse_mode="Markdown"
+                        )
+                        await asyncio.sleep(3)
+                        sent_signals += 1
+
+                        logging.info(f"[MATCH FOUND] {home_name} - {away_name} | Рынок: ТБ 2.5, КФ: {current_over}, Edge: N/A. Отправка сигнала...")
+                        continue
+
+                # Если Over не прошёл
+                if "Over 2.5 goals" not in advice:
+                    logging.info(f"[REJECTED] {home_name} - {away_name} | Причина: Нет рекомендации Over 2.5 в advice")
+
+            # === ИТОГ ЦИКЛА ===
+            logging.info(f"[SYSTEM] Цикл завершен. Проверено {len(matches)} матчей. Отправлено {sent_signals} сигналов.")
+
+            logging.info("😴 Жду 20 минут до следующего сканирования...")
+            await asyncio.sleep(1200)
+
         except Exception as e:
             logging.error(f"❌ ОШИБКА СКАНЕРА: {e}")
             await asyncio.sleep(60)
 
-# --- 4. МОНИТОРИНГ И КОМАНДЫ (БЕЗ ИЗМЕНЕНИЙ) ---
+# --- 4. МОНИТОРИНГ И КОМАНДЫ (с минимальными правками) ---
 async def status_monitor(bot):
     while True:
         try:
             if ADMIN_ID:
-                await bot.send_message(chat_id=ADMIN_ID, text=f"🔔 Monster PRO в поиске сигналов... 🟢")
+                await bot.send_message(chat_id=ADMIN_ID, text=f"🔔 Monster PRO v2.8 в поиске сигналов... 🟢")
         except: pass
         await asyncio.sleep(3600)
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Бот Monster PRO запущен! Ожидайте лучшие сигналы.")
+    await update.message.reply_text("✅ Бот Monster PRO v2.8 запущен по ТЗ ULTIMATE!\nОжидайте сигналы с тотальным логированием.")
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d = load_stats()
@@ -161,11 +316,29 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    data = load_stats(); action, amt = query.data.split("_"); amt = float(amt)
-    if action == "win": data["bank"] += amt * 0.9; data["wins"] += 1
-    else: data["bank"] -= amt; data["losses"] += 1
-    save_stats(data)
-    await query.edit_message_text(text=f"{query.message.text}\n\n📊 Статистика обновлена!")
+
+    stats = load_stats()
+    data = query.data.split("_")
+    action = data[0]
+    amt = float(data[1])
+
+    if len(data) > 2:  # win с кэфом
+        kf = float(data[2])
+    else:
+        kf = 1.0  # fallback (не должно происходить)
+
+    if action == "win":
+        profit = amt * (kf - 1)
+        stats["bank"] += profit
+        stats["wins"] += 1
+        result_text = f"✅ ЗАШЛО (+{round(profit, 2)}₽)"
+    else:
+        stats["bank"] -= amt
+        stats["losses"] += 1
+        result_text = "❌ МИМО"
+
+    save_stats(stats)
+    await query.edit_message_text(text=f"{query.message.text}\n\n{result_text}\n📊 Статистика обновлена!")
 
 async def post_init(app: Application):
     asyncio.create_task(scanner(app.bot))
@@ -173,7 +346,9 @@ async def post_init(app: Application):
 
 def main():
     threading.Thread(target=run_health_server, daemon=True).start()
-    if not TOKEN: return
+    if not TOKEN:
+        logging.error("❌ BOT_TOKEN не задан!")
+        return
     app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
