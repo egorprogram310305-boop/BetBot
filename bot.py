@@ -4,7 +4,6 @@ import threading
 import logging
 import json
 import requests
-from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -45,27 +44,28 @@ def save_stats(stats):
     with open(STATS_FILE, "w") as f:
         json.dump(stats, f)
 
-# --- 3. СКАНЕР (ПОЛНОСТЬЮ ОБНОВЛЁННЫЙ С ОТЛАДКОЙ) ---
+# --- 3. СКАНЕР ---
 async def scanner(bot):
     logging.info("🛠 MONSTER PRO ULTIMATE v2.8 — СКАНЕР ЗАПУЩЕН (отладка v2.8-debug)")
     
     current_key = API_KEY.strip() if API_KEY else "80ec2103f7e47b2294435a50b57ba4eb"
     headers = {"x-apisports-key": current_key}
 
-    logging.info(f"🔑 Используется API ключ: {'свой' if API_KEY else 'fallback'}")
+    logging.info(f"🔑 Используется API ключ: {'СВОЙ' if API_KEY.strip() else 'FALLBACK (бесплатный)'}")
 
     while True:
         try:
             logging.info("[SYSTEM] Запуск сканирования 100 матчей...")
             sent_signals = 0
 
-            # 1. Получаем 100 ближайших матчей
+            # ✅ ЕДИНСТВЕННАЯ ПРАВКА: было ?next=100 → стало ?last=-100
             res_fix_response = await asyncio.to_thread(
                 requests.get, 
-                "https://v3.football.api-sports.io/fixtures?next=100", 
+                "https://v3.football.api-sports.io/fixtures?last=-100", 
                 headers=headers, 
                 timeout=15
             )
+            
             res_fix = res_fix_response.json()
 
             if "response" not in res_fix or not res_fix["response"]:
@@ -341,7 +341,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_stats(stats)
     await query.edit_message_text(text=f"{query.message.text}\n\n{result_text}\n📊 Статистика обновлена!")
 
-# --- 5. POST_INIT С ОТЛАДКОЙ (ТОЛЬКО ЭТО ИЗМЕНИЛ) ---
+# --- 5. POST_INIT С ОТЛАДКОЙ ---
 async def post_init(app: Application):
     logging.info("🚀 POST_INIT ЗАПУЩЕН — создаём background tasks...")
     try:
