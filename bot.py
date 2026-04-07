@@ -17,13 +17,16 @@ TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_ID")
 STATS_FILE = "stats.json"
 
-# Список ключей для ротации
-FOOTBALL_KEYS = [
-    os.getenv("FOOTBALL_API_KEY", "80ec2103f7e47b2294435a50b57ba4eb"),
-    os.getenv("FOOTBALL_API_KEY_2")
+# Список ключей Football-Data.org для ротации
+FD_KEYS = [
+    "ТВОЙ_КЛЮЧ_1",
+    "ТВОЙ_КЛЮЧ_2",
+    "ТВОЙ_КЛЮЧ_3",
+    "ТВОЙ_КЛЮЧ_4"
 ]
-FOOTBALL_KEYS = [key for key in FOOTBALL_KEYS if key]
-current_key_index = 0
+# Очищаем пустые значения
+FD_KEYS = [k for k in FD_KEYS if k and k != "ТВОЙ_КЛЮЧ_1"]
+current_key_idx = 0
 
 # --- 1. СЕРВЕР ДЛЯ RENDER (Health Check) ---
 class HealthHandler(BaseHTTPRequestHandler):
@@ -43,34 +46,31 @@ def run_health_server():
 def load_stats():
     if os.path.exists(STATS_FILE):
         with open(STATS_FILE, "r") as f:
-            try: 
-                return json.load(f)
-            except: 
-                return {"bank": 1000, "wins": 0, "losses": 0}
+            try: return json.load(f)
+            except: return {"bank": 1000, "wins": 0, "losses": 0}
     return {"bank": 1000, "wins": 0, "losses": 0}
 
 def save_stats(stats):
     with open(STATS_FILE, "w") as f:
         json.dump(stats, f)
 
-# --- 3. РОТАЦИЯ API КЛЮЧЕЙ ---
-def fetch_api_data(url):
-    global current_key_index
-    if not FOOTBALL_KEYS:
-        logging.error("❌ Нет доступных API ключей!")
+# --- 3. ФУНКЦИЯ ЗАПРОСА (FOOTBALL-DATA.ORG) ---
+def fetch_fd_data(endpoint):
+    global current_key_idx
+    if not FD_KEYS:
+        logging.error("❌ Ключи API не настроены!")
         return None
         
-    for _ in range(len(FOOTBALL_KEYS)):
-        active_key = FOOTBALL_KEYS[current_key_index]
-        headers = {
-            'x-apisports-key': active_key,
-            'x-rapidapi-host': 'v3.football.api-sports.io'
-        }
+    url = f"https://api.football-data.org/v4/{endpoint}"
+    
+    for _ in range(len(FD_KEYS)):
+        active_key = FD_KEYS[current_key_idx]
+        headers = {'X-Auth-Token': active_key}
         try:
             response = requests.get(url, headers=headers, timeout=15)
-            if response.status_code == 429 or "requests limit reached" in response.text.lower():
-                logging.warning(f"⚠️ Ключ №{current_key_index + 1} исчерпан. Переключаюсь...")
-                current_key_index = (current_key_index + 1) % len(FOOTBALL_KEYS)
+            if response.status_code == 429:
+                logging.warning(f"⚠️ Ключ №{current_key_idx + 1} исчерпан. Ротация...")
+                current_key_idx = (current_key_idx + 1) % len(FD_KEYS)
                 continue
             return response.json()
         except Exception as e:
@@ -78,114 +78,69 @@ def fetch_api_data(url):
             return None
     return None
 
-# --- 4. УЛУЧШЕННЫЙ СКАНЕР (ОБЪЕДИНЕННАЯ ВЕРСИЯ) ---
+# --- 4. УЛУЧШЕННЫЙ СКАНЕР v3.0 ---
 async def scanner(bot):
-    logging.info("🛠 MONSTER PRO ULTIMATE v2.8 — СИСТЕМА ЗАПУЩЕНА")
+    logging.info("🛠 MONSTER PRO FD-EDITION — СИСТЕМА ЗАПУЩЕНА")
     
     while True:
         try:
-            # Получаем текущую дату в формате YYYY-MM-DD
-            today = datetime.datetime.now().strftime('%Y-%m-%d')
-            logging.info(f"[SYSTEM] Запрос матчей на сегодня: {today}")
-            
-            url = f"https://v3.football.api-sports.io/fixtures?date={today}"
-            res_fix = await asyncio.to_thread(fetch_api_data, url)
+            logging.info("[SYSTEM] Запрос актуальных матчей...")
+            # Получаем все матчи (Football-Data отдает список на ближайшее время)
+            data = await asyncio.to_thread(fetch_fd_data, "matches")
 
-            if not res_fix or "response" not in res_fix or not res_fix["response"]:
-                logging.warning("[SYSTEM] API прислал пустой список или ошибка доступа. Жду 10 мин...")
+            if not data or "matches" not in data:
+                logging.warning("[SYSTEM] API недоступно или пустой ответ. Сплю 10 мин.")
                 await asyncio.sleep(600)
                 continue
 
-            all_matches = res_fix["response"]
-            # Фильтруем только те, что еще не начались (статус NS)
-            upcoming = [m for m in all_matches if m['fixture']['status']['short'] == 'NS']
-            
-            logging.info(f"[DEBUG] Найдено матчей сегодня: {len(all_matches)}. Ожидают начала: {len(upcoming)}")
-            
             sent_signals = 0
-
-            # Ограничиваем выборку первыми 40 предстоящими матчами для экономии лимитов
-            for match in upcoming[:40]:
-                f_id = match['fixture']['id']
-                home_n = match['teams']['home']['name']
-                away_n = match['teams']['away']['name']
-                match_label = f"{home_n} — {away_n}"
-
-                # ШАГ 1: Проверка коэффициентов
-                res_odds = await asyncio.to_thread(fetch_api_data, f"https://v3.football.api-sports.io/odds?fixture={f_id}&bookmakers=8")
-                bookie = None
-                if res_odds and res_odds.get("response") and len(res_odds["response"]) > 0:
-                    bookmakers_list = res_odds["response"][0].get("bookmakers", [])
-                    # Ищем Bet365 (8) или 1xBet (1)
-                    bookie = next((b for b in bookmakers_list if b.get("id") in [1, 8]), None)
-                
-                if not bookie:
-                    continue 
-
-                # Извлекаем маркеты 1X2 и ТБ
-                market_1x2 = next((m for m in bookie.get('bets', []) if m.get('id') == 1), None)
-                market_over = next((m for m in bookie.get('bets', []) if m.get('id') == 3 or 'Over/Under' in m.get('name', '')), None)
-
-                curr_h = next((float(o['odd']) for o in market_1x2.get('values', []) if o.get('value') == 'Home'), 0) if market_1x2 else 0
-                curr_a = next((float(o['odd']) for o in market_1x2.get('values', []) if o.get('value') == 'Away'), 0) if market_1x2 else 0
-                curr_ov = next((float(o['odd']) for o in market_over.get('values', []) if 'Over 2.5' in str(o.get('value', ''))), 0) if market_over else 0
-
-                # Если КФ не подходят под стратегию — пропускаем
-                if not (1.70 <= curr_h <= 2.50 or 1.70 <= curr_a <= 2.50 or 1.70 <= curr_ov <= 2.30):
+            for match in data['matches']:
+                # Фильтруем: только те, что еще не начались
+                if match['status'] != 'TIMED':
                     continue
 
-                # ШАГ 2: Глубокий анализ (прогнозы)
-                logging.info(f"🔎 Анализ параметров для: {match_label}")
-                res_pred = await asyncio.to_thread(fetch_api_data, f"https://v3.football.api-sports.io/predictions?fixture={f_id}")
-                if not res_pred or not res_pred.get("response"): continue
+                home_n = match['homeTeam']['name']
+                away_n = match['awayTeam']['name']
                 
-                p_data = res_pred["response"][0]
-                comp = p_data.get('comparison', {})
-                advice = p_data['predictions'].get('advice', '')
-                
-                try:
-                    prob_h = int(p_data['predictions']['percent']['home'].replace('%','')) / 100
-                    prob_a = int(p_data['predictions']['percent']['away'].replace('%','')) / 100
-                    form_h = int(comp.get('form', {}).get('home', '0%').replace('%',''))
-                    form_a = int(comp.get('form', {}).get('away', '0%').replace('%',''))
-                    h2h_h = int(comp.get('h2h', {}).get('home', '0%').replace('%',''))
-                    h2h_a = int(comp.get('h2h', {}).get('away', '0%').replace('%',''))
-                except: continue
+                # Извлекаем коэффициенты (если API их отдает для этой лиги)
+                odds = match.get('odds', {})
+                curr_h = odds.get('homeWin')
+                curr_a = odds.get('awayWin')
+                curr_d = odds.get('draw')
 
-                # Логика П1
-                if 1.70 <= curr_h <= 2.50 and form_h >= 55 and h2h_h >= 50:
-                    edge = (curr_h / (1/prob_h if prob_h > 0 else 99)) - 1
-                    if edge >= 0.06:
+                if not curr_h or not curr_a:
+                    continue
+
+                # Стратегия П1 (Валуйность рассчитываем на основе базового алгоритма)
+                # В FD-org нет детальных predictions в бесплатке, поэтому используем мат. ожидание
+                if 1.70 <= curr_h <= 2.50:
+                    # Условный расчет вероятности (можно заменить на свою формулу)
+                    # Если КФ на П1 значительно ниже чем на П2, считаем валуйность
+                    if curr_a / curr_h > 1.5: 
+                        edge = round((1 / curr_h) * 0.1, 2) # Пример упрощенного Edge
                         await send_signal(bot, home_n, away_n, "П1", curr_h, edge)
                         sent_signals += 1
-                        continue
 
-                # Логика П2
-                if 1.70 <= curr_a <= 2.50 and form_a >= 55 and h2h_a >= 50:
-                    edge = (curr_a / (1/prob_a if prob_a > 0 else 99)) - 1
-                    if edge >= 0.06:
+                # Стратегия П2
+                elif 1.70 <= curr_a <= 2.50:
+                    if curr_h / curr_a > 1.5:
+                        edge = round((1 / curr_a) * 0.1, 2)
                         await send_signal(bot, home_n, away_n, "П2", curr_a, edge)
                         sent_signals += 1
-                        continue
 
-                # Логика ТБ 2.5
-                if "Over 2.5 goals" in advice and 1.70 <= curr_ov <= 2.30:
-                    await send_signal(bot, home_n, away_n, "ТБ 2.5", curr_ov, 0)
-                    sent_signals += 1
-
-            logging.info(f"[SYSTEM] Цикл окончен. Сигналов найдено: {sent_signals}. Сон 15 мин.")
-            await asyncio.sleep(900)
+            logging.info(f"[SYSTEM] Сканирование окончено. Найдено: {sent_signals}. Сон 30 мин.")
+            await asyncio.sleep(1800) # 30 минут, чтобы не спамить лимиты
 
         except Exception as e:
-            logging.error(f"❌ Критическая ошибка в сканере: {e}", exc_info=True)
+            logging.error(f"❌ Ошибка в сканере: {e}", exc_info=True)
             await asyncio.sleep(60)
 
-# --- 5. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+# --- 5. ОБРАБОТКА СИГНАЛОВ И КОМАНД ---
 async def send_signal(bot, home, away, market, kf, edge):
     stats = load_stats()
     bet_amount = round(stats['bank'] * 0.03, 2)
     text = (
-        f"💳 **MONSTER PRO: SIGNAL**\n\n"
+        f"💳 **MONSTER PRO: SIGNAL (FD)**\n\n"
         f"⚽️ {home} — {away}\n"
         f"🎯 Ставка: **{market}**\n"
         f"📈 КФ: **{kf}**\n"
@@ -199,10 +154,10 @@ async def send_signal(bot, home, away, market, kf, edge):
     try:
         await bot.send_message(chat_id=ADMIN_ID, text=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
     except Exception as e:
-        logging.error(f"Ошибка отправки: {e}")
+        logging.error(f"Ошибка отправки сообщения: {e}")
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚀 Сканер Monster PRO запущен и анализирует матчи на сегодня!")
+    await update.message.reply_text("🚀 Сканер Monster PRO (v3.0) на базе Football-Data запущен!")
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d = load_stats()
@@ -212,8 +167,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     stats = load_stats()
+    
     data = query.data.split("_")
-    action, amt = data[0], float(data[1])
+    action = data[0]
+    amt = float(data[1])
     kf = float(data[2]) if len(data) > 2 else 1.0
 
     if action == "win":
@@ -233,14 +190,20 @@ async def post_init(app: Application):
     asyncio.create_task(scanner(app.bot))
 
 def main():
+    # Запуск сервера для Render
     threading.Thread(target=run_health_server, daemon=True).start()
-    if not TOKEN: 
-        logging.error("BOT_TOKEN не найден!")
+    
+    if not TOKEN:
+        logging.error("BOT_TOKEN не найден в переменных окружения!")
         return
+
     app = Application.builder().token(TOKEN).post_init(post_init).build()
+    
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CallbackQueryHandler(handle_callback))
+    
+    logging.info("🤖 Бот запущен. Ожидание сигналов...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
