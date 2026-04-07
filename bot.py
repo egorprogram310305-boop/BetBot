@@ -11,10 +11,18 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 # Настройка логирования
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
+# --- НАСТРОЙКИ ПЕРЕМЕННЫХ ---
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_ID")
-API_KEY = os.getenv("API_KEY") 
 STATS_FILE = "stats.json"
+
+# Собираем ключи в список и отсеиваем пустые (если второй ключ еще не добавлен)
+FOOTBALL_KEYS = [
+    os.getenv("FOOTBALL_API_KEY", "80ec2103f7e47b2294435a50b57ba4eb"), # Твой основной ключ (с fallback для тестов)
+    os.getenv("FOOTBALL_API_KEY_2")                                    # Твой второй ключ
+]
+FOOTBALL_KEYS = [key for key in FOOTBALL_KEYS if key] # Убираем None значения
+current_key_index = 0
 
 # --- 1. СЕРВЕР ДЛЯ RENDER ---
 class HealthHandler(BaseHTTPRequestHandler):
@@ -44,31 +52,54 @@ def save_stats(stats):
     with open(STATS_FILE, "w") as f:
         json.dump(stats, f)
 
+# --- УМНАЯ ФУНКЦИЯ ЗАПРОСОВ С РОТАЦИЕЙ КЛЮЧЕЙ ---
+def fetch_api_data(url):
+    """Отправляет запрос к API и автоматически меняет ключ при исчерпании лимита"""
+    global current_key_index
+    
+    if not FOOTBALL_KEYS:
+        logging.error("❌ Нет доступных API ключей для футбола!")
+        return None
+        
+    for _ in range(len(FOOTBALL_KEYS)):
+        active_key = FOOTBALL_KEYS[current_key_index]
+        headers = {
+            'x-apisports-key': active_key,
+            'x-rapidapi-host': 'v3.football.api-sports.io'
+        }
+        
+        try:
+            response = requests.get(url, headers=headers, timeout=15)
+            
+            # Проверка лимитов (код 429 или спец. поле в ответе API)
+            if response.status_code == 429 or "requests limit reached" in response.text.lower():
+                logging.warning(f"⚠️ Ключ №{current_key_index + 1} исчерпал лимит. Переключаюсь на резервный...")
+                current_key_index = (current_key_index + 1) % len(FOOTBALL_KEYS)
+                continue # Пробуем следующий ключ
+                
+            return response.json()
+            
+        except Exception as e:
+            logging.error(f"❌ Ошибка запроса: {e}")
+            return None
+            
+    logging.error("🚨 ВСЕ КЛЮЧИ ИСЧЕРПАЛИ ЛИМИТЫ!")
+    return None
+
 # --- 3. СКАНЕР ---
 async def scanner(bot):
     logging.info("🛠 MONSTER PRO ULTIMATE v2.8 — СКАНЕР ЗАПУЩЕН (отладка v2.8-debug)")
-    
-    current_key = API_KEY.strip() if API_KEY else "80ec2103f7e47b2294435a50b57ba4eb"
-    headers = {"x-apisports-key": current_key}
-
-    logging.info(f"🔑 Используется API ключ: {'СВОЙ' if API_KEY.strip() else 'FALLBACK (бесплатный)'}")
+    logging.info(f"🔑 Доступно ключей для ротации: {len(FOOTBALL_KEYS)}")
 
     while True:
         try:
             logging.info("[SYSTEM] Запуск сканирования 100 матчей...")
             sent_signals = 0
 
-            # ✅ ЕДИНСТВЕННАЯ ПРАВКА: было ?next=100 → стало ?last=-100
-            res_fix_response = await asyncio.to_thread(
-                requests.get, 
-                "https://v3.football.api-sports.io/fixtures?last=-100", 
-                headers=headers, 
-                timeout=15
-            )
-            
-            res_fix = res_fix_response.json()
+            # Запрашиваем матчи через нашу новую умную функцию
+            res_fix = await asyncio.to_thread(fetch_api_data, "https://v3.football.api-sports.io/fixtures?last=-100")
 
-            if "response" not in res_fix or not res_fix["response"]:
+            if not res_fix or "response" not in res_fix or not res_fix["response"]:
                 logging.info("[SYSTEM] Цикл завершен. Проверено 0 матчей. Отправлено 0 сигналов.")
                 await asyncio.sleep(1200)
                 continue
@@ -82,13 +113,9 @@ async def scanner(bot):
                 away_name = match['teams']['away']['name']
 
                 # === Прогнозы (один запрос на матч) ===
-                res_pred_response = await asyncio.to_thread(
-                    requests.get, 
-                    f"https://v3.football.api-sports.io/predictions?fixture={f_id}", 
-                    headers=headers
-                )
-                res_pred = res_pred_response.json()
-                if not res_pred.get("response"):
+                res_pred = await asyncio.to_thread(fetch_api_data, f"https://v3.football.api-sports.io/predictions?fixture={f_id}")
+                
+                if not res_pred or not res_pred.get("response"):
                     logging.info(f"[REJECTED] {home_name} - {away_name} | Причина: Нет данных прогноза")
                     continue
 
@@ -106,27 +133,17 @@ async def scanner(bot):
 
                 # === Коэффициенты (приоритет Bet365 id=8 → 1xBet id=1) ===
                 # Сначала пытаемся с Bet365
-                res_odds_response = await asyncio.to_thread(
-                    requests.get, 
-                    f"https://v3.football.api-sports.io/odds?fixture={f_id}&bookmakers=8", 
-                    headers=headers
-                )
-                res_odds = res_odds_response.json()
+                res_odds = await asyncio.to_thread(fetch_api_data, f"https://v3.football.api-sports.io/odds?fixture={f_id}&bookmakers=8")
 
                 bookie = None
-                if res_odds.get("response") and res_odds["response"]:
+                if res_odds and res_odds.get("response") and res_odds["response"]:
                     bookmakers_list = res_odds["response"][0].get("bookmakers", [])
                     bookie = next((b for b in bookmakers_list if b.get("id") == 8), None)
 
                 # Fallback на 1xBet
                 if not bookie:
-                    res_odds_response = await asyncio.to_thread(
-                        requests.get, 
-                        f"https://v3.football.api-sports.io/odds?fixture={f_id}&bookmakers=1", 
-                        headers=headers
-                    )
-                    res_odds = res_odds_response.json()
-                    if res_odds.get("response") and res_odds["response"]:
+                    res_odds = await asyncio.to_thread(fetch_api_data, f"https://v3.football.api-sports.io/odds?fixture={f_id}&bookmakers=1")
+                    if res_odds and res_odds.get("response") and res_odds["response"]:
                         bookmakers_list = res_odds["response"][0].get("bookmakers", [])
                         bookie = next((b for b in bookmakers_list if b.get("id") == 1), None)
 
