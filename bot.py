@@ -45,12 +45,14 @@ def save_stats(stats):
     with open(STATS_FILE, "w") as f:
         json.dump(stats, f)
 
-# --- 3. СКАНЕР (ПОЛНОСТЬЮ ПЕРЕПИСАН ПО ТЗ v2.8) ---
+# --- 3. СКАНЕР (ПОЛНОСТЬЮ ОБНОВЛЁННЫЙ С ОТЛАДКОЙ) ---
 async def scanner(bot):
-    logging.info("🛠 MONSTER PRO ULTIMATE v2.8 ЗАПУЩЕН")
+    logging.info("🛠 MONSTER PRO ULTIMATE v2.8 — СКАНЕР ЗАПУЩЕН (отладка v2.8-debug)")
     
     current_key = API_KEY.strip() if API_KEY else "80ec2103f7e47b2294435a50b57ba4eb"
     headers = {"x-apisports-key": current_key}
+
+    logging.info(f"🔑 Используется API ключ: {'свой' if API_KEY else 'fallback'}")
 
     while True:
         try:
@@ -142,7 +144,6 @@ async def scanner(bot):
                     form_home = int(comp.get('form', {}).get('home', '0%').replace('%',''))
                     h2h_home = int(comp.get('h2h', {}).get('home', '0%').replace('%',''))
 
-                    # Стабильность линии (opening odds в API отсутствуют → считаем текущий кэф стабильным)
                     stable = True
 
                     if form_home >= 55 and h2h_home >= 50 and stable:
@@ -175,11 +176,11 @@ async def scanner(bot):
                                 reply_markup=InlineKeyboardMarkup(kb), 
                                 parse_mode="Markdown"
                             )
-                            await asyncio.sleep(3)  # защита от rate-limit TG
+                            await asyncio.sleep(3)
                             sent_signals += 1
 
                             logging.info(f"[MATCH FOUND] {home_name} - {away_name} | Рынок: П1, КФ: {current_home}, Edge: {int(edge*100)}%. Отправка сигнала...")
-                            continue  # переходим к следующему матчу (один сигнал за матч максимум)
+                            continue
 
                     # === REJECTED (статистика или кэф) ===
                     if form_home < 55 or h2h_home < 50:
@@ -249,10 +250,10 @@ async def scanner(bot):
                     current_over = next((float(o['odd']) for o in market_over.get('values', []) if o.get('value') == 'Over 2.5' or 'Over 2.5' in str(o.get('value', ''))), None)
 
                 if "Over 2.5 goals" in advice and current_over and 1.70 <= current_over <= 2.30:
-                    stable = True  # opening odds отсутствуют в API
+                    stable = True
 
                     if stable:
-                        # === УСПЕХ ТБ 2.5 (edge не рассчитывается по ТЗ) ===
+                        # === УСПЕХ ТБ 2.5 ===
                         stats = load_stats()
                         bank = stats['bank']
                         bet_amount = round(bank * 0.03, 2)
@@ -294,10 +295,10 @@ async def scanner(bot):
             await asyncio.sleep(1200)
 
         except Exception as e:
-            logging.error(f"❌ ОШИБКА СКАНЕРА: {e}")
+            logging.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА В СКАНЕРЕ: {e}", exc_info=True)
             await asyncio.sleep(60)
 
-# --- 4. МОНИТОРИНГ И КОМАНДЫ (с минимальными правками) ---
+# --- 4. МОНИТОРИНГ И КОМАНДЫ ---
 async def status_monitor(bot):
     while True:
         try:
@@ -322,10 +323,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action = data[0]
     amt = float(data[1])
 
-    if len(data) > 2:  # win с кэфом
+    if len(data) > 2:
         kf = float(data[2])
     else:
-        kf = 1.0  # fallback (не должно происходить)
+        kf = 1.0
 
     if action == "win":
         profit = amt * (kf - 1)
@@ -340,9 +341,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_stats(stats)
     await query.edit_message_text(text=f"{query.message.text}\n\n{result_text}\n📊 Статистика обновлена!")
 
+# --- 5. POST_INIT С ОТЛАДКОЙ (ТОЛЬКО ЭТО ИЗМЕНИЛ) ---
 async def post_init(app: Application):
-    asyncio.create_task(scanner(app.bot))
-    asyncio.create_task(status_monitor(app.bot))
+    logging.info("🚀 POST_INIT ЗАПУЩЕН — создаём background tasks...")
+    try:
+        scanner_task = asyncio.create_task(scanner(app.bot))
+        monitor_task = asyncio.create_task(status_monitor(app.bot))
+        
+        logging.info("✅ Scanner task создан успешно")
+        logging.info("✅ Status monitor task создан успешно")
+        
+        app.bot_data["scanner_task"] = scanner_task
+        app.bot_data["monitor_task"] = monitor_task
+    except Exception as e:
+        logging.error(f"❌ ОШИБКА ПРИ СОЗДАНИИ TASKS: {e}", exc_info=True)
 
 def main():
     threading.Thread(target=run_health_server, daemon=True).start()
