@@ -4,6 +4,7 @@ import threading
 import logging
 import json
 import requests
+import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -77,54 +78,64 @@ def fetch_api_data(url):
             return None
     return None
 
-# --- 4. ОПТИМИЗИРОВАННЫЙ СКАНЕР ---
+# --- 4. УЛУЧШЕННЫЙ СКАНЕР (ОБЪЕДИНЕННАЯ ВЕРСИЯ) ---
 async def scanner(bot):
-    logging.info("🛠 MONSTER PRO ULTIMATE v2.8 — СКАНЕР ЗАПУЩЕН")
+    logging.info("🛠 MONSTER PRO ULTIMATE v2.8 — СИСТЕМА ЗАПУЩЕНА")
     
     while True:
         try:
-            logging.info("[SYSTEM] Запуск сканирования 60 ближайших матчей...")
-            res_fix = await asyncio.to_thread(
-                fetch_api_data, 
-                "https://v3.football.api-sports.io/fixtures?next=60" # Уменьшил до 60 для стабильности
-            )
+            # Получаем текущую дату в формате YYYY-MM-DD
+            today = datetime.datetime.now().strftime('%Y-%m-%d')
+            logging.info(f"[SYSTEM] Запрос матчей на сегодня: {today}")
+            
+            url = f"https://v3.football.api-sports.io/fixtures?date={today}"
+            res_fix = await asyncio.to_thread(fetch_api_data, url)
 
             if not res_fix or "response" not in res_fix or not res_fix["response"]:
-                logging.info("[SYSTEM] Матчей не найдено. Жду 15 минут...")
-                await asyncio.sleep(900)
+                logging.warning("[SYSTEM] API прислал пустой список или ошибка доступа. Жду 10 мин...")
+                await asyncio.sleep(600)
                 continue
 
-            matches = res_fix["response"]
+            all_matches = res_fix["response"]
+            # Фильтруем только те, что еще не начались (статус NS)
+            upcoming = [m for m in all_matches if m['fixture']['status']['short'] == 'NS']
+            
+            logging.info(f"[DEBUG] Найдено матчей сегодня: {len(all_matches)}. Ожидают начала: {len(upcoming)}")
+            
             sent_signals = 0
 
-            for match in matches:
+            # Ограничиваем выборку первыми 40 предстоящими матчами для экономии лимитов
+            for match in upcoming[:40]:
                 f_id = match['fixture']['id']
                 home_n = match['teams']['home']['name']
                 away_n = match['teams']['away']['name']
+                match_label = f"{home_n} — {away_n}"
 
-                # ШАГ 1: Сначала проверяем только коэффициенты (Bookmaker ID 8 - Bet365 или 1 - 1xBet)
+                # ШАГ 1: Проверка коэффициентов
                 res_odds = await asyncio.to_thread(fetch_api_data, f"https://v3.football.api-sports.io/odds?fixture={f_id}&bookmakers=8")
                 bookie = None
-                if res_odds and res_odds.get("response"):
+                if res_odds and res_odds.get("response") and len(res_odds["response"]) > 0:
                     bookmakers_list = res_odds["response"][0].get("bookmakers", [])
+                    # Ищем Bet365 (8) или 1xBet (1)
                     bookie = next((b for b in bookmakers_list if b.get("id") in [1, 8]), None)
                 
-                if not bookie: continue # Пропускаем, если кэфов еще нет
+                if not bookie:
+                    continue 
 
-                # Извлекаем маркеты
+                # Извлекаем маркеты 1X2 и ТБ
                 market_1x2 = next((m for m in bookie.get('bets', []) if m.get('id') == 1), None)
                 market_over = next((m for m in bookie.get('bets', []) if m.get('id') == 3 or 'Over/Under' in m.get('name', '')), None)
 
-                # Проверяем, есть ли смысл анализировать этот матч дальше (подходят ли КФ)
                 curr_h = next((float(o['odd']) for o in market_1x2.get('values', []) if o.get('value') == 'Home'), 0) if market_1x2 else 0
                 curr_a = next((float(o['odd']) for o in market_1x2.get('values', []) if o.get('value') == 'Away'), 0) if market_1x2 else 0
-                curr_ov = next((float(o['odd']) for o in market_1x2.get('values', []) if 'Over 2.5' in str(o.get('value', ''))), 0) if market_over else 0
+                curr_ov = next((float(o['odd']) for o in market_over.get('values', []) if 'Over 2.5' in str(o.get('value', ''))), 0) if market_over else 0
 
-                # Если ни один КФ не в нашем диапазоне, не тратим запрос на прогноз
+                # Если КФ не подходят под стратегию — пропускаем
                 if not (1.70 <= curr_h <= 2.50 or 1.70 <= curr_a <= 2.50 or 1.70 <= curr_ov <= 2.30):
                     continue
 
-                # ШАГ 2: Только теперь запрашиваем прогноз
+                # ШАГ 2: Глубокий анализ (прогнозы)
+                logging.info(f"🔎 Анализ параметров для: {match_label}")
                 res_pred = await asyncio.to_thread(fetch_api_data, f"https://v3.football.api-sports.io/predictions?fixture={f_id}")
                 if not res_pred or not res_pred.get("response"): continue
                 
@@ -141,7 +152,7 @@ async def scanner(bot):
                     h2h_a = int(comp.get('h2h', {}).get('away', '0%').replace('%',''))
                 except: continue
 
-                # ПРОВЕРКА ЛОГИКИ П1
+                # Логика П1
                 if 1.70 <= curr_h <= 2.50 and form_h >= 55 and h2h_h >= 50:
                     edge = (curr_h / (1/prob_h if prob_h > 0 else 99)) - 1
                     if edge >= 0.06:
@@ -149,7 +160,7 @@ async def scanner(bot):
                         sent_signals += 1
                         continue
 
-                # ПРОВЕРКА ЛОГИКИ П2
+                # Логика П2
                 if 1.70 <= curr_a <= 2.50 and form_a >= 55 and h2h_a >= 50:
                     edge = (curr_a / (1/prob_a if prob_a > 0 else 99)) - 1
                     if edge >= 0.06:
@@ -157,19 +168,19 @@ async def scanner(bot):
                         sent_signals += 1
                         continue
 
-                # ПРОВЕРКА ЛОГИКИ ТБ 2.5
+                # Логика ТБ 2.5
                 if "Over 2.5 goals" in advice and 1.70 <= curr_ov <= 2.30:
                     await send_signal(bot, home_n, away_n, "ТБ 2.5", curr_ov, 0)
                     sent_signals += 1
 
-            logging.info(f"[SYSTEM] Цикл завершен. Отправлено сигналов: {sent_signals}. Сон 20 мин.")
-            await asyncio.sleep(1200)
+            logging.info(f"[SYSTEM] Цикл окончен. Сигналов найдено: {sent_signals}. Сон 15 мин.")
+            await asyncio.sleep(900)
 
         except Exception as e:
-            logging.error(f"❌ Ошибка в сканере: {e}", exc_info=True)
+            logging.error(f"❌ Критическая ошибка в сканере: {e}", exc_info=True)
             await asyncio.sleep(60)
 
-# --- 5. ФУНКЦИЯ ОТПРАВКИ СИГНАЛА ---
+# --- 5. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 async def send_signal(bot, home, away, market, kf, edge):
     stats = load_stats()
     bet_amount = round(stats['bank'] * 0.03, 2)
@@ -179,7 +190,7 @@ async def send_signal(bot, home, away, market, kf, edge):
         f"🎯 Ставка: **{market}**\n"
         f"📈 КФ: **{kf}**\n"
         f"🟢 Валуйность: **+{int(edge*100)}%**\n"
-        f"💰 Рекомендуемая ставка: **{bet_amount}₽**"
+        f"💰 Сумма: **{bet_amount}₽**"
     )
     kb = [[
         InlineKeyboardButton("✅ ЗАШЛО", callback_data=f"win_{bet_amount}_{kf}"),
@@ -188,12 +199,10 @@ async def send_signal(bot, home, away, market, kf, edge):
     try:
         await bot.send_message(chat_id=ADMIN_ID, text=text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
     except Exception as e:
-        logging.error(f"Ошибка отправки сообщения: {e}")
-    await asyncio.sleep(2)
+        logging.error(f"Ошибка отправки: {e}")
 
-# --- 6. ОБРАБОТЧИКИ КОМАНД ---
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚀 Сканер Monster PRO запущен и ищет валуйные ставки!")
+    await update.message.reply_text("🚀 Сканер Monster PRO запущен и анализирует матчи на сегодня!")
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d = load_stats()
@@ -236,4 +245,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
