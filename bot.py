@@ -30,9 +30,18 @@ TIER_2_LEAGUES = [
     "soccer_portugal_primeira_liga", "soccer_turkey_super_lig"
 ]
 
-# Кэш для детектора падения линии (Line Lag)
-# Структура: { 'event_id_market': last_fair_odd }
 last_odds_cache = {}
+
+# --- СИСТЕМА СТАТИСТИКИ ---
+def load_stats():
+    if os.path.exists("stats.json"):
+        try:
+            with open("stats.json", "r") as f: return json.load(f)
+        except: pass
+    return {"bank": 1000.0, "wins": 0, "losses": 0}
+
+def save_stats(s):
+    with open("stats.json", "w") as f: json.dump(s, f)
 
 # --- МАТЕМАТИКА ---
 def get_fair_odds(bookies_data, market_key):
@@ -79,70 +88,100 @@ def fetch_odds(league):
             current_key_idx = (current_key_idx + 1) % len(ODDS_KEYS)
     return None
 
+# --- ТЕЛЕГРАМ КОМАНДЫ И КОЛЛБЕКИ ---
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if str(update.effective_user.id) == str(ADMIN_ID):
+        await update.message.reply_text("🚀 Monster Pro v3.8 готов к работе!")
+
+async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if str(update.effective_user.id) == str(ADMIN_ID):
+        s = load_stats()
+        text = f"📊 <b>БАНК: {round(s['bank'], 2)}₽</b>\n✅ Вин: {s['wins']} | ❌ Луз: {s['losses']}"
+        await update.message.reply_text(text, parse_mode="HTML")
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    s = load_stats()
+    d = query.data.split("_")
+    try:
+        if d[0] == "w":
+            s["bank"] += float(d[1]) * (float(d[2]) - 1); s["wins"] += 1
+        else:
+            s["bank"] -= float(d[1]); s["losses"] += 1
+        save_stats(s)
+        await query.edit_message_text(f"{query.message.text_html}\n\n<b>ОБРАБОТАНО</b>", parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"❌ Ошибка кнопки: {e}")
+
 # --- СКАНЕР ---
 async def scanner(bot):
     logger.info(f"🚀 МОНСТР v3.8 MASTER ЗАПУЩЕН. Обойма: {len(ODDS_KEYS)} ключей.")
     
     while True:
-        all_leagues = TIER_1_LEAGUES + TIER_2_LEAGUES
-        for league in all_leagues:
-            data = await asyncio.to_thread(fetch_odds, league)
-            if not data or not isinstance(data, list): continue
+        try:
+            all_leagues = TIER_1_LEAGUES + TIER_2_LEAGUES
+            for league in all_leagues:
+                data = await asyncio.to_thread(fetch_odds, league)
+                if not data or not isinstance(data, list): continue
 
-            is_tier1 = league in TIER_1_LEAGUES
-            edge_threshold = 0.04 if is_tier1 else 0.08
-            
-            for event in data:
-                event_id = event['id']
-                h, a = event['home_team'], event['away_team']
+                is_tier1 = league in TIER_1_LEAGUES
+                edge_threshold = 0.04 if is_tier1 else 0.08
                 
-                # Фильтр времени (от 15 мин до 20 часов)
-                start_time = datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00'))
-                time_to_start = (start_time - datetime.now(timezone.utc)).total_seconds() / 3600
-                if time_to_start < 0.25 or time_to_start > 20: continue
+                for event in data:
+                    event_id = event['id']
+                    h, a = event['home_team'], event['away_team']
+                    
+                    # Фильтр времени (от 15 мин до 20 часов)
+                    start_time = datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00'))
+                    time_to_start = (start_time - datetime.now(timezone.utc)).total_seconds() / 3600
+                    if time_to_start < 0.25 or time_to_start > 20: continue
 
-                for m_type in ['h2h', 'totals']:
-                    fair_odds_list = get_fair_odds(event['bookmakers'], m_type)
-                    if not fair_odds_list: continue
+                    for m_type in ['h2h', 'totals']:
+                        fair_odds_list = get_fair_odds(event['bookmakers'], m_type)
+                        if not fair_odds_list: continue
 
-                    # Детектор падения линии (Line Lag)
-                    cache_key = f"{event_id}_{m_type}"
-                    is_hot = False
-                    if cache_key in last_odds_cache:
-                        # Если текущий "честный" КФ стал значительно ниже старого — линия падает
-                        if fair_odds_list[0] < last_odds_cache[cache_key][0] * 0.97:
-                            is_hot = True
-                            logger.info(f"⚡️ ОБНАРУЖЕНО ПАДЕНИЕ ЛИНИИ: {h} - {a}")
-                    last_odds_cache[cache_key] = fair_odds_list
+                        # Детектор падения линии (Line Lag)
+                        cache_key = f"{event_id}_{m_type}"
+                        is_hot = False
+                        if cache_key in last_odds_cache:
+                            if fair_odds_list[0] < last_odds_cache[cache_key][0] * 0.97:
+                                is_hot = True
+                                logger.info(f"⚡️ ОБНАРУЖЕНО ПАДЕНИЕ ЛИНИИ: {h} - {a}")
+                        last_odds_cache[cache_key] = fair_odds_list
 
-                    # Проверка валуя в "мягких" БК
-                    for bookie in event['bookmakers']:
-                        # Пропускаем шарпов при поиске валуя
-                        if bookie['key'] in ['pinnacle', 'betfair_ex_eu']: continue
-                        
-                        soft_m = next((m for m in bookie['markets'] if m['key'] == m_type), None)
-                        if not soft_m: continue
+                        # Проверка валуя в "мягких" БК
+                        for bookie in event['bookmakers']:
+                            if bookie['key'] in ['pinnacle', 'betfair_ex_eu']: continue
+                            
+                            soft_m = next((m for m in bookie['markets'] if m['key'] == m_type), None)
+                            if not soft_m: continue
 
-                        for i, outcome in enumerate(soft_m['outcomes']):
-                            s_odd = outcome['price']
-                            f_odd = fair_odds_list[i]
-                            edge = (s_odd / f_odd) - 1
+                            for i, outcome in enumerate(soft_m['outcomes']):
+                                s_odd = outcome['price']
+                                f_odd = fair_odds_list[i]
+                                edge = (s_odd / f_odd) - 1
 
-                            if 1.70 <= s_odd <= 2.60 and edge >= edge_threshold:
-                                logger.info(f"✅ НАЙДЕНО: {h} | {outcome['name']} | Edge: {round(edge*100,1)}%")
-                                await send_signal(bot, h, a, outcome['name'], s_odd, edge, bookie['title'], is_hot, is_tier1)
+                                if 1.70 <= s_odd <= 2.60 and edge >= edge_threshold:
+                                    logger.info(f"✅ НАЙДЕНО: {h} | {outcome['name']} | Edge: {round(edge*100,1)}%")
+                                    await send_signal(bot, h, a, outcome['name'], s_odd, edge, bookie['title'], is_hot, is_tier1)
 
-            await asyncio.sleep(2) # Защита от перегрузки
+                await asyncio.sleep(2) # Защита от перегрузки
 
-        logger.info("🛌 Круг завершен. Пауза 4 минуты.")
-        await asyncio.sleep(240)
+            logger.info("🛌 Круг завершен. Пауза 4 минуты.")
+            await asyncio.sleep(240)
+            
+        except Exception as e:
+            logger.error(f"‼️ ОШИБКА СКАНЕРА: {traceback.format_exc()}")
+            await asyncio.sleep(60)
 
 async def send_signal(bot, h, a, side, odd, edge, bookie, is_hot, is_tier1):
-    # Умный стейкинг: база 3%, +1% если HOT, +1% если Tier-1
+    stats = load_stats()
     percent = 3
     if is_hot: percent += 1
     if is_tier1: percent += 1
     
+    rub = round(stats['bank'] * (percent/100), 2)
     label = "⚡️ HOT SIGNAL" if is_hot else "💎 PRO SIGNAL"
     tier_label = "🏆 TOP LEAGUE" if is_tier1 else "📈 REGULAR"
     
@@ -151,24 +190,58 @@ async def send_signal(bot, h, a, side, odd, edge, bookie, is_hot, is_tier1):
             f"🏅 Лига: {tier_label}\n"
             f"🎯 Ставка: <b>{side}</b>\n"
             f"📈 КФ: <b>{odd}</b> | Edge: <b>+{round(edge*100, 1)}%</b>\n"
-            f"💰 Сумма: <b>{percent}%</b>\n\n"
+            f"💰 Сумма: <b>{percent}% ({rub}₽)</b>\n\n"
             f"<i>*Консенсус-анализ рынка завершен</i>")
     
-    kb = [[InlineKeyboardButton("✅ ЗАШЛО", callback_data=f"w_{percent}_{odd}"),
-           InlineKeyboardButton("❌ МИМО", callback_data=f"l_{percent}")]]
+    kb = [[InlineKeyboardButton("✅ ЗАШЛО", callback_data=f"w_{rub}_{odd}"),
+           InlineKeyboardButton("❌ МИМО", callback_data=f"l_{rub}")]]
     
     try:
         await bot.send_message(ADMIN_ID, text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
     except: pass
 
-# --- ЗАПУСК ---
+
+# --- ИСПРАВЛЕННЫЙ БЛОК СЕРВЕРА И ЗАПУСКА ---
+
+class SimpleHealthCheck(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive")
+        
+    def do_HEAD(self):
+        # Это уберет ошибки 501 в логах Render
+        self.send_response(200)
+        self.end_headers()
+    
+    def log_message(self, format, *args):
+        # Это уберет лишний мусор из логов при проверках Render
+        return
+
 async def post_init(app: Application):
+    logger.info("🤖 Инициализация фоновых задач...")
     asyncio.create_task(scanner(app.bot))
 
 def main():
-    threading.Thread(target=lambda: HTTPServer(('0.0.0.0', int(os.environ.get("PORT", 10000))), BaseHTTPRequestHandler).serve_forever(), daemon=True).start()
+    # Запускаем сервер на порту Render (обычно 10000)
+    port = int(os.environ.get("PORT", 10000))
+    threading.Thread(target=lambda: HTTPServer(('0.0.0.0', port), SimpleHealthCheck).serve_forever(), daemon=True).start()
+    
+    # Инициализация бота
     app = Application.builder().token(TOKEN).post_init(post_init).build()
+    
+    # Регистрация команд
+    app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler("stats", stats_cmd))
+    app.add_handler(CallbackQueryHandler(handle_callback))
+    
+    logger.info("🚀 БОТ ЗАПУЩЕН. СИСТЕМА МОНИТОРИНГА АКТИВНА.")
     app.run_polling(drop_pending_updates=True)
 
-if __name__ == "__main__": main()
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        logger.critical(f"ГЛОБАЛЬНЫЙ СБОЙ: {e}")
+
 
