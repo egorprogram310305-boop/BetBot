@@ -23,8 +23,9 @@ ODDS_KEYS = [os.getenv(f"ODDS_API_KEY_{i}") for i in range(1, 26) if os.getenv(f
 current_key_idx = 0
 key_remaining = {}
 
-TIER_1_LEAGUES = ["soccer_epl", "soccer_uefa_champs_league", "soccer_germany_bundesliga", "soccer_italy_serie_a", "soccer_spain_la_liga", "soccer_france_ligue1"]
-TIER_2_LEAGUES = ["soccer_uefa_europa_league", "soccer_russia_premier_league", "soccer_netherlands_ere_divisie", "soccer_portugal_primeira_liga", "soccer_turkey_super_lig"]
+TIER_1_LEAGUES = ["soccer_epl", "soccer_germany_bundesliga", "soccer_italy_serie_a", "soccer_spain_la_liga", "soccer_uefa_champs_league"]
+TIER_2_LEAGUES = ["soccer_france_ligue1", "soccer_russia_premier_league", "soccer_netherlands_ere_divisie"]
+
 
 last_odds_cache = {}
 
