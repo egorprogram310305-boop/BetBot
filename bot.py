@@ -18,14 +18,16 @@ TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = os.getenv("CHAT_ID")
 TIME_OFFSET = 3  # МОСКВА (UTC+3)
 
-# ПРАВКА 1: Загрузка ключей из одной строки через запятую
 RAW_KEYS = os.getenv("ODDS_API_KEYS", "")
 ODDS_KEYS = [k.strip() for k in RAW_KEYS.split(",") if k.strip()]
 
 current_key_idx = 0
 key_remaining = {}
 
-# Лиги (из предыдущего обновления)
+# ГЛОБАЛЬНАЯ ПАМЯТЬ БОТА (Логики 1 и 3: Drop Tracking & Steam Moves)
+odds_history = {}
+
+# Лиги
 TIER_1_LEAGUES = ["soccer_epl", "soccer_germany_bundesliga", "soccer_italy_serie_a", "soccer_spain_la_liga", "soccer_france_ligue1", "soccer_uefa_champs_league"]
 TIER_2_LEAGUES = ["soccer_russia_premier_league", "soccer_netherlands_ere_divisie", "soccer_portugal_primeira_liga", "soccer_efl_champ", "soccer_uefa_europa_league"]
 
@@ -42,19 +44,27 @@ def save_stats(s):
 def get_fair_odds(bookies_data, market_key):
     sharps = ['pinnacle', 'betfair_ex_eu', 'betonline_ag']
     all_fair_probs = []
+    
     for b_key in sharps:
         bookie = next((b for b in bookies_data if b['key'] == b_key), None)
         if not bookie: continue
         market = next((m for m in bookie['markets'] if m['key'] == market_key), None)
         if not market: continue
+        
         odds = [o['price'] for o in market['outcomes']]
         inv_sum = sum(1/o for o in odds)
+        
+        # ЛОГИКА 2: Защита от низкой маржи (No-Vig Accuracy)
+        # Если маржа букмекера больше 8% (1.08), рынок слишком "грязный", игнорируем
+        if inv_sum > 1.08: 
+            continue
+            
         all_fair_probs.append([(1/o) / inv_sum for o in odds])
+        
     if not all_fair_probs: return None
     avg_probs = [sum(p) / len(p) for p in zip(*all_fair_probs)]
     return [1/p for p in avg_probs]
 
-# ПРАВКА 2: Умное переключение ключей (401, 403, 429)
 def fetch_odds(league):
     global current_key_idx
     if not ODDS_KEYS:
@@ -72,13 +82,10 @@ def fetch_odds(league):
             
             if res.status_code == 200:
                 return res.json()
-            
-            # Переключаем ключ при любой ошибке доступа или лимитов
             elif res.status_code in [401, 403, 429]:
                 logger.warning(f"⚠️ Ключ #{current_key_idx+1} недоступен (Код: {res.status_code}). Листаю дальше...")
                 current_key_idx = (current_key_idx + 1) % len(ODDS_KEYS)
                 continue
-            
             elif res.status_code == 404:
                 return "IGNORE_404"
             else:
@@ -124,8 +131,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- СКАНЕР ---
 async def scanner(bot):
     logger.info(f"🚀 МОНИТОРИНГ ЗАПУЩЕН (UTC+{TIME_OFFSET})")
+    global odds_history
+    
     while True:
         try:
+            # Очистка памяти от старых матчей раз в день (защита от переполнения ОЗУ)
+            if len(odds_history) > 15000:
+                odds_history.clear()
+                
             current_hour = (datetime.now(timezone.utc) + timedelta(hours=TIME_OFFSET)).hour
             sleep_time = 1200 if 1 <= current_hour <= 9 else 240
 
@@ -156,12 +169,24 @@ async def scanner(bot):
                             s_odd, f_odd = outcome['price'], fair_odds[i]
                             edge = (s_odd / f_odd) - 1
                             
+                            # ЛОГИКИ 1 и 3: Дроп за круг (Steam Moves)
+                            uid = f"{event['id']}_{m_type}_{outcome.get('name')}_{outcome.get('point', '')}"
+                            prev_f_odd = odds_history.get(uid)
+                            
+                            is_steam_move = False
+                            # Если в прошлом круге кф был выше, и сейчас упал на 0.05 или более - это прогруз!
+                            if prev_f_odd and (prev_f_odd - f_odd >= 0.05):
+                                is_steam_move = True
+                                
+                            # Обновляем память
+                            odds_history[uid] = f_odd
+                            
                             if 1.65 <= s_odd <= 3.0 and edge >= edge_threshold:
                                 suitable_count += 1
                                 p = 1/f_odd; b = s_odd - 1
                                 kelly = ((p * s_odd - 1) / b) * 0.25
                                 kelly_pct = max(0.01, min(0.05, kelly))
-                                await send_signal(bot, event, outcome.get('name', 'N/A'), outcome.get('point', ''), s_odd, edge, kelly_pct, m_type)
+                                await send_signal(bot, event, outcome.get('name', 'N/A'), outcome.get('point', ''), s_odd, edge, kelly_pct, m_type, is_steam_move)
                 
                 logger.info(f"📡 {league.replace('soccer_', '')}: Матчей: {total_matches} | Найдено: {suitable_count}")
                 await asyncio.sleep(2)
@@ -173,17 +198,23 @@ async def scanner(bot):
             logger.error(f"❌ Ошибка: {traceback.format_exc()}")
             await asyncio.sleep(60)
 
-async def send_signal(bot, ev, side, point, odd, edge, k_pct, m_type):
+async def send_signal(bot, ev, side, point, odd, edge, k_pct, m_type, is_steam_move):
     s = load_stats(); rub = round(s['bank'] * k_pct, 2)
     local_time = (datetime.fromisoformat(ev['commence_time'].replace('Z', '+00:00')) + timedelta(hours=TIME_OFFSET)).strftime("%H:%M")
     market_name = "ФОРА" if m_type == 'spreads' else "ТОТАЛ" if m_type == 'totals' else "ИСХОД"
     point_str = f"({point})" if point != '' else ""
-    text = (f"<b>🔥 BETBOOM: {market_name}</b>\n\n"
-            f"⚽️ {ev['home_team']} — {ev['away_team']}\n"
-            f"⏰ Начало: <b>{local_time}</b> (МСК)\n"
-            f"🎯 Ставка: <b>{side} {point_str}</b>\n"
-            f"📈 КФ: <b>{odd}</b> (Edge: +{round(edge*100,1)}%)\n"
-            f"💰 Ставим: <b>{rub}₽</b> ({round(k_pct*100,1)}%)\n")
+    
+    # Формируем сообщение
+    text = f"<b>🔥 BETBOOM: {market_name}</b>\n\n"
+    if is_steam_move:
+        text += "📉 <b>ВНИМАНИЕ: ЖЕСТКИЙ ПРОГРУЗ (STEAM MOVE) В МИРЕ!</b>\n\n"
+        
+    text += (f"⚽️ {ev['home_team']} — {ev['away_team']}\n"
+             f"⏰ Начало: <b>{local_time}</b> (МСК)\n"
+             f"🎯 Ставка: <b>{side} {point_str}</b>\n"
+             f"📈 КФ: <b>{odd}</b> (Edge: +{round(edge*100,1)}%)\n"
+             f"💰 Ставим: <b>{rub}₽</b> ({round(k_pct*100,1)}%)\n")
+             
     kb = [[InlineKeyboardButton("✅", callback_data=f"w_{rub}_{odd}"), InlineKeyboardButton("❌", callback_data=f"l_{rub}")]]
     await bot.send_message(ADMIN_ID, text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
 
