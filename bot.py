@@ -23,9 +23,9 @@ ODDS_KEYS = [os.getenv(f"ODDS_API_KEY_{i}") for i in range(1, 26) if os.getenv(f
 current_key_idx = 0
 key_remaining = {}
 
-# Очищенные списки лиг (без 404 ошибок)
-TIER_1_LEAGUES = ["soccer_epl", "soccer_germany_bundesliga", "soccer_italy_serie_a", "soccer_spain_la_liga", "soccer_uefa_champs_league"]
-TIER_2_LEAGUES = ["soccer_russia_premier_league"]
+# --- ПРАВКА 1: Расширенные списки лиг ---
+TIER_1_LEAGUES = ["soccer_epl", "soccer_germany_bundesliga", "soccer_italy_serie_a", "soccer_spain_la_liga", "soccer_france_ligue1", "soccer_uefa_champs_league"]
+TIER_2_LEAGUES = ["soccer_russia_premier_league", "soccer_netherlands_ere_divisie", "soccer_portugal_primeira_liga", "soccer_efl_champ", "soccer_uefa_europa_league"]
 
 last_odds_cache = {}
 
@@ -75,6 +75,9 @@ def fetch_odds(league):
                 logger.warning(f"⚠️ Ключ #{current_key_idx+1} исчерпан (429). Переключаюсь...")
                 current_key_idx = (current_key_idx + 1) % len(ODDS_KEYS)
                 continue
+            elif res.status_code == 404:
+                # --- ПРАВКА 2: Тихая защита от 404 ошибок ---
+                return "IGNORE_404"
             else:
                 logger.error(f"❌ Ошибка API: {res.status_code} для {league}")
                 return None
@@ -120,14 +123,12 @@ async def scanner(bot):
     logger.info(f"🚀 СИСТЕМА МОНИТОРИНГА ЗАПУЩЕНА (UTC+{TIME_OFFSET})")
     while True:
         try:
-            # --- НОВЫЙ БЛОК: НОЧНОЙ РЕЖИМ ---
             current_hour = (datetime.now(timezone.utc) + timedelta(hours=TIME_OFFSET)).hour
             if 1 <= current_hour <= 9:
                 sleep_time = 1200 # 20 минут пауза ночью
                 logger.info(f"🌙 Ночной режим. Спим 20 минут (Сейчас {current_hour}:00 МСК)")
             else:
                 sleep_time = 240  # 4 минуты пауза днем
-            # --------------------------------
 
             for league in (TIER_1_LEAGUES + TIER_2_LEAGUES):
                 data = await asyncio.to_thread(fetch_odds, league)
@@ -135,20 +136,23 @@ async def scanner(bot):
                 if data == "ERROR_NO_KEYS":
                     logger.error("🛑 СКАНЕР ОСТАНОВЛЕН: Нет ключей в настройках!")
                     return
+                if data == "IGNORE_404":
+                    # Тихий пропуск лиги, если она недоступна (защита от логов 404)
+                    continue
                 if data is None or not isinstance(data, list):
                     logger.info(f"📡 {league}: Данные не получены или пусты.")
                     continue
                 
                 total_matches = len(data)
                 suitable_count = 0
-                edge_threshold = 0.04 if league in TIER_1_LEAGUES else 0.08
+                
+                # --- ПРАВКА 3: Сниженный порог Edge до 3.5% ---
+                edge_threshold = 0.035 if league in TIER_1_LEAGUES else 0.06
 
                 for event in data:
                     st = datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00'))
-                    # Фильтр по времени: от 15 минут до 20 часов до старта
                     if not (0.25 < (st - datetime.now(timezone.utc)).total_seconds() / 3600 < 20): continue
                     
-                    # Проверяем исходы, тоталы и форы
                     for m_type in ['h2h', 'totals', 'spreads']:
                         fair_odds = get_fair_odds(event['bookmakers'], m_type)
                         if not fair_odds: continue
@@ -162,13 +166,11 @@ async def scanner(bot):
                             s_odd, f_odd = outcome['price'], fair_odds[i]
                             edge = (s_odd / f_odd) - 1
                             
-                            # Проверка перевеса и диапазона кэфов
                             if 1.65 <= s_odd <= 3.0 and edge >= edge_threshold:
                                 suitable_count += 1
                                 p = 1/f_odd; b = s_odd - 1
-                                # Расчет Келли (дробный 0.25)
                                 kelly = ((p * s_odd - 1) / b) * 0.25
-                                kelly_pct = max(0.01, min(0.05, kelly)) # от 1% до 5%
+                                kelly_pct = max(0.01, min(0.05, kelly))
                                 await send_signal(bot, event, outcome.get('name', 'N/A'), outcome.get('point', ''), s_odd, edge, kelly_pct, m_type)
                 
                 logger.info(f"📡 {league.replace('soccer_', '')}: Матчей: {total_matches} | Найдено: {suitable_count}")
@@ -214,6 +216,7 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__": main()
+
 
 
 
