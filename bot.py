@@ -18,9 +18,10 @@ TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = os.getenv("CHAT_ID")
 TIME_OFFSET = 3  # МОСКВА (UTC+3)
 
+# Загрузка ключей с проверкой
 ODDS_KEYS = [os.getenv(f"ODDS_API_KEY_{i}") for i in range(1, 26) if os.getenv(f"ODDS_API_KEY_{i}")]
 current_key_idx = 0
-key_remaining = {} # Хранение остатка лимитов
+key_remaining = {}
 
 TIER_1_LEAGUES = ["soccer_epl", "soccer_uefa_champs_league", "soccer_germany_bundesliga", "soccer_italy_serie_a", "soccer_spain_la_liga", "soccer_france_ligue1"]
 TIER_2_LEAGUES = ["soccer_uefa_europa_league", "soccer_russia_premier_league", "soccer_netherlands_ere_divisie", "soccer_portugal_primeira_liga", "soccer_turkey_super_lig"]
@@ -54,30 +55,37 @@ def get_fair_odds(bookies_data, market_key):
 
 def fetch_odds(league):
     global current_key_idx
-    if not ODDS_KEYS: return None
+    if not ODDS_KEYS:
+        logger.error("❌ КЛЮЧИ ODDS_API НЕ НАЙДЕНЫ В ENV!")
+        return "ERROR_NO_KEYS"
+    
     for _ in range(len(ODDS_KEYS)):
         api_key = ODDS_KEYS[current_key_idx]
         url = f"https://api.the-odds-api.com/v4/sports/{league}/odds/"
-        # Добавили spreads (форы) в запрос
         params = {'apiKey': api_key, 'regions': 'eu', 'markets': 'h2h,totals,spreads', 'oddsFormat': 'decimal'}
         try:
             res = requests.get(url, params=params, timeout=15)
-            # Мониторинг лимитов ключей
             remaining = res.headers.get('x-requests-remaining')
             if remaining: key_remaining[current_key_idx + 1] = remaining
             
-            if res.status_code == 429:
+            if res.status_code == 200:
+                return res.json()
+            elif res.status_code == 429:
+                logger.warning(f"⚠️ Ключ #{current_key_idx+1} исчерпан (429). Переключаюсь...")
                 current_key_idx = (current_key_idx + 1) % len(ODDS_KEYS)
                 continue
-            return res.json()
-        except: current_key_idx = (current_key_idx + 1) % len(ODDS_KEYS)
+            else:
+                logger.error(f"❌ Ошибка API: {res.status_code} для {league}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ Ошибка запроса: {e}")
+            current_key_idx = (current_key_idx + 1) % len(ODDS_KEYS)
     return None
 
-# --- КОМАНДЫ ТЕЛЕГРАМ ---
-
+# --- КОМАНДЫ ---
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) == str(ADMIN_ID):
-        await update.message.reply_text("🚀 <b>Monster v4.0 PRO</b> запущен.\n\nКоманды:\n/stats - статистика\n/setbank - обновить банк\n/keys - статус лимитов", parse_mode="HTML")
+        await update.message.reply_text(f"🚀 <b>Monster v4.0 PRO АКТИВЕН</b>\nКлючей в обойме: {len(ODDS_KEYS)}", parse_mode="HTML")
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) == str(ADMIN_ID):
@@ -89,14 +97,14 @@ async def set_bank_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             new_bank = float(context.args[0])
             s = load_stats(); s['bank'] = new_bank; save_stats(s)
-            await update.message.reply_text(f"💰 Банк успешно обновлен: <b>{new_bank}₽</b>", parse_mode="HTML")
-        except: await update.message.reply_text("Ошибка! Пиши так: /setbank 5000")
+            await update.message.reply_text(f"💰 Банк: <b>{new_bank}₽</b>", parse_mode="HTML")
+        except: await update.message.reply_text("Формат: /setbank 5000")
 
 async def keys_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) == str(ADMIN_ID):
-        text = "🔑 <b>Статус ключей (остаток):</b>\n"
+        text = "🔑 <b>Лимиты:</b>\n"
         for k, v in key_remaining.items(): text += f"Ключ #{k}: {v}\n"
-        await update.message.reply_text(text if key_remaining else "Данные еще не собраны. Жди первого круга.", parse_mode="HTML")
+        await update.message.reply_text(text if key_remaining else "Круг еще не пройден.", parse_mode="HTML")
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer(); s = load_stats(); d = query.data.split("_")
@@ -107,14 +115,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except: pass
 
 # --- СКАНЕР ---
-
 async def scanner(bot):
-    logger.info(f"🚀 ЗАПУСК v4.0 PRO. BetBoom + Келли + Spreads")
+    logger.info(f"🚀 СИСТЕМА МОНИТОРИНГА ЗАПУЩЕНА (UTC+{TIME_OFFSET})")
     while True:
         try:
             for league in (TIER_1_LEAGUES + TIER_2_LEAGUES):
                 data = await asyncio.to_thread(fetch_odds, league)
-                if not data or not isinstance(data, list): continue
+                
+                # Диагностика в логи
+                if data == "ERROR_NO_KEYS":
+                    logger.error("🛑 СКАНЕР ОСТАНОВЛЕН: Нет ключей в настройках!")
+                    return
+                if data is None or not isinstance(data, list):
+                    logger.info(f"📡 {league}: Данные не получены или пусты.")
+                    continue
                 
                 total_matches = len(data)
                 suitable_count = 0
@@ -139,48 +153,44 @@ async def scanner(bot):
                             
                             if 1.65 <= s_odd <= 3.0 and edge >= edge_threshold:
                                 suitable_count += 1
-                                # Расчет Келли (дробный 0.25 для безопасности)
-                                p = 1/f_odd
-                                b = s_odd - 1
+                                p = 1/f_odd; b = s_odd - 1
                                 kelly = ((p * s_odd - 1) / b) * 0.25
-                                kelly_pct = max(0.01, min(0.05, kelly)) # Ограничение 1-5%
-                                
+                                kelly_pct = max(0.01, min(0.05, kelly))
                                 await send_signal(bot, event, outcome.get('name', 'N/A'), outcome.get('point', ''), s_odd, edge, kelly_pct, m_type)
                 
-                logger.info(f"📡 {league}: Получено {total_matches} матчей. Подходящих: {suitable_count}")
-                await asyncio.sleep(1)
+                logger.info(f"📡 {league.replace('soccer_', '')}: Матчей: {total_matches} | Найдено: {suitable_count}")
+                await asyncio.sleep(2) # Задержка между лигами
+            
+            logger.info("🛌 Круг завершен. Пауза 4 мин...")
             await asyncio.sleep(240)
-        except:
-            logger.error(f"❌ Ошибка: {traceback.format_exc()}")
+        except Exception:
+            logger.error(f"❌ Ошибка цикла: {traceback.format_exc()}")
             await asyncio.sleep(60)
 
 async def send_signal(bot, ev, side, point, odd, edge, k_pct, m_type):
     s = load_stats(); rub = round(s['bank'] * k_pct, 2)
     local_time = (datetime.fromisoformat(ev['commence_time'].replace('Z', '+00:00')) + timedelta(hours=TIME_OFFSET)).strftime("%H:%M")
-    
     market_name = "ФОРА" if m_type == 'spreads' else "ТОТАЛ" if m_type == 'totals' else "ИСХОД"
     point_str = f"({point})" if point != '' else ""
-
     text = (f"<b>🔥 BETBOOM: {market_name}</b>\n\n"
             f"⚽️ {ev['home_team']} — {ev['away_team']}\n"
             f"⏰ Начало: <b>{local_time}</b> (МСК)\n"
             f"🎯 Ставка: <b>{side} {point_str}</b>\n"
-            f"📈 КФ: <b>{odd}</b> (Перевес: +{round(edge*100,1)}%)\n"
-            f"💰 Келли рекомендует: <b>{rub}₽</b> ({round(k_pct*100,1)}%)\n")
-    
+            f"📈 КФ: <b>{odd}</b> (Edge: +{round(edge*100,1)}%)\n"
+            f"💰 Ставим: <b>{rub}₽</b> ({round(k_pct*100,1)}%)\n")
     kb = [[InlineKeyboardButton("✅", callback_data=f"w_{rub}_{odd}"), InlineKeyboardButton("❌", callback_data=f"l_{rub}")]]
     await bot.send_message(ADMIN_ID, text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
 
-# --- СЕРВЕР ---
+# --- ЗАПУСК ---
 class Health(BaseHTTPRequestHandler):
     def do_GET(self): self.send_response(200); self.end_headers(); self.wfile.write(b"OK")
-    def do_HEAD(self): self.send_response(200); self.end_headers()
     def log_message(self, format, *args): return
 
 async def post_init(app: Application): asyncio.create_task(scanner(app.bot))
 
 def main():
-    threading.Thread(target=lambda: HTTPServer(('0.0.0.0', int(os.environ.get("PORT", 10000))), Health).serve_forever(), daemon=True).start()
+    port = int(os.environ.get("PORT", 10000))
+    threading.Thread(target=lambda: HTTPServer(('0.0.0.0', port), Health).serve_forever(), daemon=True).start()
     app = Application.builder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
