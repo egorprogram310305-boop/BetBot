@@ -18,16 +18,16 @@ TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = os.getenv("CHAT_ID")
 TIME_OFFSET = 3  # МОСКВА (UTC+3)
 
-# Загрузка ключей с проверкой
-ODDS_KEYS = [os.getenv(f"ODDS_API_KEY_{i}") for i in range(1, 26) if os.getenv(f"ODDS_API_KEY_{i}")]
+# ПРАВКА 1: Загрузка ключей из одной строки через запятую
+RAW_KEYS = os.getenv("ODDS_API_KEYS", "")
+ODDS_KEYS = [k.strip() for k in RAW_KEYS.split(",") if k.strip()]
+
 current_key_idx = 0
 key_remaining = {}
 
-# --- ПРАВКА 1: Расширенные списки лиг ---
+# Лиги (из предыдущего обновления)
 TIER_1_LEAGUES = ["soccer_epl", "soccer_germany_bundesliga", "soccer_italy_serie_a", "soccer_spain_la_liga", "soccer_france_ligue1", "soccer_uefa_champs_league"]
 TIER_2_LEAGUES = ["soccer_russia_premier_league", "soccer_netherlands_ere_divisie", "soccer_portugal_primeira_liga", "soccer_efl_champ", "soccer_uefa_europa_league"]
-
-last_odds_cache = {}
 
 def load_stats():
     if os.path.exists("stats.json"):
@@ -54,10 +54,11 @@ def get_fair_odds(bookies_data, market_key):
     avg_probs = [sum(p) / len(p) for p in zip(*all_fair_probs)]
     return [1/p for p in avg_probs]
 
+# ПРАВКА 2: Умное переключение ключей (401, 403, 429)
 def fetch_odds(league):
     global current_key_idx
     if not ODDS_KEYS:
-        logger.error("❌ КЛЮЧИ ODDS_API НЕ НАЙДЕНЫ В ENV!")
+        logger.error("❌ СПИСОК КЛЮЧЕЙ ПУСТ! Проверьте переменную ODDS_API_KEYS")
         return "ERROR_NO_KEYS"
     
     for _ in range(len(ODDS_KEYS)):
@@ -71,25 +72,27 @@ def fetch_odds(league):
             
             if res.status_code == 200:
                 return res.json()
-            elif res.status_code == 429:
-                logger.warning(f"⚠️ Ключ #{current_key_idx+1} исчерпан (429). Переключаюсь...")
+            
+            # Переключаем ключ при любой ошибке доступа или лимитов
+            elif res.status_code in [401, 403, 429]:
+                logger.warning(f"⚠️ Ключ #{current_key_idx+1} недоступен (Код: {res.status_code}). Листаю дальше...")
                 current_key_idx = (current_key_idx + 1) % len(ODDS_KEYS)
                 continue
+            
             elif res.status_code == 404:
-                # --- ПРАВКА 2: Тихая защита от 404 ошибок ---
                 return "IGNORE_404"
             else:
                 logger.error(f"❌ Ошибка API: {res.status_code} для {league}")
                 return None
         except Exception as e:
-            logger.error(f"❌ Ошибка запроса: {e}")
+            logger.error(f"❌ Ошибка соединения: {e}")
             current_key_idx = (current_key_idx + 1) % len(ODDS_KEYS)
     return None
 
-# --- КОМАНДЫ ---
+# --- КОМАНДЫ ТЕЛЕГРАМ ---
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) == str(ADMIN_ID):
-        await update.message.reply_text(f"🚀 <b>Monster v4.0 PRO АКТИВЕН</b>\nКлючей в обойме: {len(ODDS_KEYS)}", parse_mode="HTML")
+        await update.message.reply_text(f"🚀 <b>Monster v4.0 PRO АКТИВЕН</b>\nКлючей загружено: {len(ODDS_KEYS)}", parse_mode="HTML")
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) == str(ADMIN_ID):
@@ -106,9 +109,9 @@ async def set_bank_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def keys_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) == str(ADMIN_ID):
-        text = "🔑 <b>Лимиты:</b>\n"
+        text = "🔑 <b>Остаток лимитов:</b>\n"
         for k, v in key_remaining.items(): text += f"Ключ #{k}: {v}\n"
-        await update.message.reply_text(text if key_remaining else "Круг еще не пройден.", parse_mode="HTML")
+        await update.message.reply_text(text if key_remaining else "Данные еще не собраны.", parse_mode="HTML")
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer(); s = load_stats(); d = query.data.split("_")
@@ -120,33 +123,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- СКАНЕР ---
 async def scanner(bot):
-    logger.info(f"🚀 СИСТЕМА МОНИТОРИНГА ЗАПУЩЕНА (UTC+{TIME_OFFSET})")
+    logger.info(f"🚀 МОНИТОРИНГ ЗАПУЩЕН (UTC+{TIME_OFFSET})")
     while True:
         try:
             current_hour = (datetime.now(timezone.utc) + timedelta(hours=TIME_OFFSET)).hour
-            if 1 <= current_hour <= 9:
-                sleep_time = 1200 # 20 минут пауза ночью
-                logger.info(f"🌙 Ночной режим. Спим 20 минут (Сейчас {current_hour}:00 МСК)")
-            else:
-                sleep_time = 240  # 4 минуты пауза днем
+            sleep_time = 1200 if 1 <= current_hour <= 9 else 240
 
             for league in (TIER_1_LEAGUES + TIER_2_LEAGUES):
                 data = await asyncio.to_thread(fetch_odds, league)
                 
-                if data == "ERROR_NO_KEYS":
-                    logger.error("🛑 СКАНЕР ОСТАНОВЛЕН: Нет ключей в настройках!")
-                    return
-                if data == "IGNORE_404":
-                    # Тихий пропуск лиги, если она недоступна (защита от логов 404)
-                    continue
-                if data is None or not isinstance(data, list):
-                    logger.info(f"📡 {league}: Данные не получены или пусты.")
-                    continue
+                if data == "ERROR_NO_KEYS": return
+                if data == "IGNORE_404" or data is None or not isinstance(data, list): continue
                 
                 total_matches = len(data)
                 suitable_count = 0
-                
-                # --- ПРАВКА 3: Сниженный порог Edge до 3.5% ---
                 edge_threshold = 0.035 if league in TIER_1_LEAGUES else 0.06
 
                 for event in data:
@@ -174,13 +164,13 @@ async def scanner(bot):
                                 await send_signal(bot, event, outcome.get('name', 'N/A'), outcome.get('point', ''), s_odd, edge, kelly_pct, m_type)
                 
                 logger.info(f"📡 {league.replace('soccer_', '')}: Матчей: {total_matches} | Найдено: {suitable_count}")
-                await asyncio.sleep(2) # 2 секунды между лигами
+                await asyncio.sleep(2)
             
             logger.info(f"🛌 Круг завершен. Пауза {sleep_time // 60} мин.")
             await asyncio.sleep(sleep_time)
             
         except Exception:
-            logger.error(f"❌ Ошибка цикла: {traceback.format_exc()}")
+            logger.error(f"❌ Ошибка: {traceback.format_exc()}")
             await asyncio.sleep(60)
 
 async def send_signal(bot, ev, side, point, odd, edge, k_pct, m_type):
@@ -216,7 +206,6 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__": main()
-
 
 
 
