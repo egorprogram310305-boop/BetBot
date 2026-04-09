@@ -23,9 +23,9 @@ ODDS_KEYS = [os.getenv(f"ODDS_API_KEY_{i}") for i in range(1, 26) if os.getenv(f
 current_key_idx = 0
 key_remaining = {}
 
+# Очищенные списки лиг (без 404 ошибок)
 TIER_1_LEAGUES = ["soccer_epl", "soccer_germany_bundesliga", "soccer_italy_serie_a", "soccer_spain_la_liga", "soccer_uefa_champs_league"]
-TIER_2_LEAGUES = ["soccer_france_ligue1", "soccer_russia_premier_league", "soccer_netherlands_ere_divisie"]
-
+TIER_2_LEAGUES = ["soccer_russia_premier_league"]
 
 last_odds_cache = {}
 
@@ -120,10 +120,18 @@ async def scanner(bot):
     logger.info(f"🚀 СИСТЕМА МОНИТОРИНГА ЗАПУЩЕНА (UTC+{TIME_OFFSET})")
     while True:
         try:
+            # --- НОВЫЙ БЛОК: НОЧНОЙ РЕЖИМ ---
+            current_hour = (datetime.now(timezone.utc) + timedelta(hours=TIME_OFFSET)).hour
+            if 1 <= current_hour <= 9:
+                sleep_time = 1200 # 20 минут пауза ночью
+                logger.info(f"🌙 Ночной режим. Спим 20 минут (Сейчас {current_hour}:00 МСК)")
+            else:
+                sleep_time = 240  # 4 минуты пауза днем
+            # --------------------------------
+
             for league in (TIER_1_LEAGUES + TIER_2_LEAGUES):
                 data = await asyncio.to_thread(fetch_odds, league)
                 
-                # Диагностика в логи
                 if data == "ERROR_NO_KEYS":
                     logger.error("🛑 СКАНЕР ОСТАНОВЛЕН: Нет ключей в настройках!")
                     return
@@ -137,8 +145,10 @@ async def scanner(bot):
 
                 for event in data:
                     st = datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00'))
+                    # Фильтр по времени: от 15 минут до 20 часов до старта
                     if not (0.25 < (st - datetime.now(timezone.utc)).total_seconds() / 3600 < 20): continue
                     
+                    # Проверяем исходы, тоталы и форы
                     for m_type in ['h2h', 'totals', 'spreads']:
                         fair_odds = get_fair_odds(event['bookmakers'], m_type)
                         if not fair_odds: continue
@@ -152,18 +162,21 @@ async def scanner(bot):
                             s_odd, f_odd = outcome['price'], fair_odds[i]
                             edge = (s_odd / f_odd) - 1
                             
+                            # Проверка перевеса и диапазона кэфов
                             if 1.65 <= s_odd <= 3.0 and edge >= edge_threshold:
                                 suitable_count += 1
                                 p = 1/f_odd; b = s_odd - 1
+                                # Расчет Келли (дробный 0.25)
                                 kelly = ((p * s_odd - 1) / b) * 0.25
-                                kelly_pct = max(0.01, min(0.05, kelly))
+                                kelly_pct = max(0.01, min(0.05, kelly)) # от 1% до 5%
                                 await send_signal(bot, event, outcome.get('name', 'N/A'), outcome.get('point', ''), s_odd, edge, kelly_pct, m_type)
                 
                 logger.info(f"📡 {league.replace('soccer_', '')}: Матчей: {total_matches} | Найдено: {suitable_count}")
-                await asyncio.sleep(2) # Задержка между лигами
+                await asyncio.sleep(2) # 2 секунды между лигами
             
-            logger.info("🛌 Круг завершен. Пауза 4 мин...")
-            await asyncio.sleep(240)
+            logger.info(f"🛌 Круг завершен. Пауза {sleep_time // 60} мин.")
+            await asyncio.sleep(sleep_time)
+            
         except Exception:
             logger.error(f"❌ Ошибка цикла: {traceback.format_exc()}")
             await asyncio.sleep(60)
@@ -201,6 +214,7 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__": main()
+
 
 
 
