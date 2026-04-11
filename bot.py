@@ -28,8 +28,26 @@ key_remaining = {}
 odds_history = {}
 
 # Лиги
-TIER_1_LEAGUES = ["soccer_epl", "soccer_germany_bundesliga", "soccer_italy_serie_a", "soccer_spain_la_liga", "soccer_france_ligue1", "soccer_uefa_champs_league"]
-TIER_2_LEAGUES = ["soccer_russia_premier_league", "soccer_netherlands_ere_divisie", "soccer_portugal_primeira_liga", "soccer_efl_champ", "soccer_uefa_europa_league"]
+TIER_1_LEAGUES = [
+    "soccer_epl", 
+    "soccer_germany_bundesliga", 
+    "soccer_italy_serie_a", 
+    "soccer_spain_la_liga", 
+    "soccer_france_ligue_one",  # Исправлено
+    "soccer_uefa_champs_league"
+]
+
+TIER_2_LEAGUES = [
+    "soccer_russia_premier_league", 
+    "soccer_netherlands_ere_divisie", 
+    "soccer_portugal_primeira_liga", 
+    "soccer_efl_champ", 
+    "soccer_uefa_europa_league",
+    "soccer_turkey_super_league",     # Добавлено (Турция)
+    "soccer_belgium_first_division_a", # Добавлено (Бельгия)
+    "soccer_usa_mls",                 # Добавлено (МЛС - ночь)
+    "soccer_brazil_campeonato"        # Добавлено (Бразилия - ночь)
+]
 
 def load_stats():
     if os.path.exists("stats.json"):
