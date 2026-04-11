@@ -56,7 +56,7 @@ def get_fair_odds(bookies_data, market_key):
         
         # ЛОГИКА 2: Защита от низкой маржи (No-Vig Accuracy)
         # Если маржа букмекера больше 8% (1.08), рынок слишком "грязный", игнорируем
-        if inv_sum > 1.08: 
+        if inv_sum > 1.10: 
             continue
             
         all_fair_probs.append([(1/o) / inv_sum for o in odds])
@@ -150,11 +150,11 @@ async def scanner(bot):
                 
                 total_matches = len(data)
                 suitable_count = 0
-                edge_threshold = 0.035 if league in TIER_1_LEAGUES else 0.06
+                edge_threshold = 0.035 if league in TIER_1_LEAGUES else 0.45
 
                 for event in data:
                     st = datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00'))
-                    if not (0.25 < (st - datetime.now(timezone.utc)).total_seconds() / 3600 < 20): continue
+                    if not (0.25 < (st - datetime.now(timezone.utc)).total_seconds() / 3600 < 48): continue
                     
                     for m_type in ['h2h', 'totals', 'spreads']:
                         fair_odds = get_fair_odds(event['bookmakers'], m_type)
