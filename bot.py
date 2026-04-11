@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- НАСТРОЙКИ ---
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger("MonsterV4.0_Pro")
+logger = logging.getLogger("MonsterV4.1_Fixed")
 
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = os.getenv("CHAT_ID")
@@ -25,9 +25,11 @@ current_key_idx = 0
 key_remaining = {}
 odds_history = {}
 
+# Лиги разделены по уровням для гибких порогов Edge
 TIER_1_LEAGUES = ["soccer_epl", "soccer_germany_bundesliga", "soccer_italy_serie_a", "soccer_spain_la_liga", "soccer_france_ligue_one", "soccer_uefa_champs_league"]
 TIER_2_LEAGUES = ["soccer_russia_premier_league", "soccer_netherlands_ere_divisie", "soccer_portugal_primeira_liga", "soccer_efl_champ", "soccer_uefa_europa_league", "soccer_turkey_super_league", "soccer_belgium_first_division_a", "soccer_usa_mls", "soccer_brazil_campeonato"]
 
+# --- СТАТИСТИКА ---
 def load_stats():
     if os.path.exists("stats.json"):
         try:
@@ -38,6 +40,7 @@ def load_stats():
 def save_stats(s):
     with open("stats.json", "w") as f: json.dump(s, f)
 
+# --- ЛОГИКА АНАЛИЗА ---
 def get_fair_odds(bookies_data, market_key):
     sharps = ['pinnacle', 'betfair_ex_eu', 'betonline_ag']
     all_fair_probs = []
@@ -51,9 +54,8 @@ def get_fair_odds(bookies_data, market_key):
         odds = [o['price'] for o in market['outcomes']]
         inv_sum = sum(1/o for o in odds)
         
-        # Ослабили фильтр маржи до 1.12, чтобы видеть больше лиг в выходные
-        if inv_sum > 1.12: 
-            continue
+        # Расширенная маржа до 1.12 для захвата Tier-2 рынков
+        if inv_sum > 1.12: continue
             
         all_fair_probs.append([(1/o) / inv_sum for o in odds])
         
@@ -80,23 +82,26 @@ def fetch_odds(league):
             current_key_idx = (current_key_idx + 1) % len(ODDS_KEYS)
     return None
 
+# --- ГЛАВНЫЙ СКАНЕР ---
 async def scanner(bot):
-    logger.info(f"🚀 МОНИТОРИНГ ЗАПУЩЕН (UTC+3) - ФИЛЬТРЫ ОСЛАБЛЕНЫ")
+    logger.info("🚀 МОНИТОРИНГ ЗАПУЩЕН (EDGE: 3.0%-3.5%)")
     global odds_history
     while True:
         try:
             if len(odds_history) > 15000: odds_history.clear()
             
-            for league in (TIER_1_LEAGUES + TIER_2_LEAGUES):
+            all_leagues = TIER_1_LEAGUES + TIER_2_LEAGUES
+            for league in all_leagues:
                 data = await asyncio.to_thread(fetch_odds, league)
                 if data is None or not isinstance(data, list): continue
                 
-                # Пороги: 3% для топов, 3.5% для остальных
+                # Мягкие пороги для выходных
                 edge_threshold = 0.030 if league in TIER_1_LEAGUES else 0.035
 
                 for event in data:
                     st = datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00'))
-                    if not (0.25 < (st - datetime.now(timezone.utc)).total_seconds() / 3600 < 48): continue
+                    diff_h = (st - datetime.now(timezone.utc)).total_seconds() / 3600
+                    if not (0.25 < diff_h < 48): continue
                     
                     for m_type in ['h2h', 'totals', 'spreads']:
                         fair_odds = get_fair_odds(event['bookmakers'], m_type)
@@ -111,11 +116,11 @@ async def scanner(bot):
                             s_odd, f_odd = outcome['price'], fair_odds[i]
                             edge = (s_odd / f_odd) - 1
                             
-                            # ЛОГ ДЛЯ ПРОВЕРКИ (видим всё от 1.5% перевеса)
+                            # Логирование подозрительных матчей в консоль Render
                             if edge >= 0.015:
                                 logger.info(f"🔍 {event['home_team']} | КФ: {s_odd} | Edge: {edge*100:.1f}%")
                             
-                            # РАСШИРЕННЫЙ ДИАПАЗОН: Кэфы 1.5 - 4.0
+                            # Основной фильтр: кэфы 1.5 - 4.0
                             if 1.50 <= s_odd <= 4.0 and edge >= edge_threshold:
                                 uid = f"{event['id']}_{m_type}_{outcome.get('name')}_{outcome.get('point', '')}"
                                 prev_f_odd = odds_history.get(uid)
@@ -130,14 +135,14 @@ async def scanner(bot):
                 await asyncio.sleep(1)
             await asyncio.sleep(240)
         except Exception:
-            logger.error(f"❌ Ошибка: {traceback.format_exc()}")
+            logger.error(f"❌ Ошибка сканера: {traceback.format_exc()}")
             await asyncio.sleep(60)
 
 async def send_signal(bot, ev, side, point, odd, edge, k_pct, m_type, is_steam_move):
     s = load_stats(); rub = round(s['bank'] * k_pct, 2)
     local_time = (datetime.fromisoformat(ev['commence_time'].replace('Z', '+00:00')) + timedelta(hours=3)).strftime("%H:%M")
     market_name = "ФОРА" if m_type == 'spreads' else "ТОТАЛ" if m_type == 'totals' else "ИСХОД"
-    point_str = f"({point})" if point != '' else ""
+    point_str = f"({point})" if point is not None and point != '' else ""
     
     text = f"<b>🔥 BETBOOM: {market_name}</b>\n\n"
     if is_steam_move: text += "📉 <b>STEAM MOVE: КЭФ В МИРЕ ПАДАЕТ!</b>\n\n"
@@ -147,10 +152,44 @@ async def send_signal(bot, ev, side, point, odd, edge, k_pct, m_type, is_steam_m
              f"📈 КФ: <b>{odd}</b> (Edge: +{round(edge*100,1)}%)\n"
              f"💰 Ставим: <b>{rub}₽</b>\n")
              
-    kb = [[InlineKeyboardButton("✅", callback_data=f"w_{rub}_{odd}"), InlineKeyboardButton("❌", callback_data=f"l_{rub}")]]
+    kb = [[InlineKeyboardButton("✅ WIN", callback_data=f"w_{rub}_{odd}"), InlineKeyboardButton("❌ LOSS", callback_data=f"l_{rub}")]]
     await bot.send_message(ADMIN_ID, text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
 
-# --- ЗАПУСК ---
+# --- ОБРАБОТКА КНОПОК ---
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data.split('_')
+    action = data[0]
+    s = load_stats()
+
+    if action == 'w':
+        profit = float(data[1]) * (float(data[2]) - 1)
+        s['bank'] += profit; s['wins'] += 1
+        res = f"✅ +{round(profit, 2)}₽"
+    elif action == 'l':
+        loss = float(data[1])
+        s['bank'] -= loss; s['losses'] += 1
+        res = f"❌ -{round(loss, 2)}₽"
+
+    save_stats(s)
+    new_text = query.message.text + f"\n\nИТОГ: {res}\n💰 БАНК: {round(s['bank'], 2)}₽"
+    await query.edit_message_text(text=new_text, parse_mode="HTML")
+
+# --- КОМАНДЫ ---
+async def start_cmd(u, c): 
+    if str(u.effective_user.id) == str(ADMIN_ID): await u.message.reply_text("🚀 Monster v4.1: СИСТЕМА ОНЛАЙН")
+async def stats_cmd(u, c):
+    s = load_stats(); await u.message.reply_text(f"📊 БАНК: {round(s['bank'], 2)}₽\n✅ {s['wins']} | ❌ {s['losses']}")
+async def set_bank_cmd(u, c):
+    try: b = float(c.args[0]); s = load_stats(); s['bank'] = b; save_stats(s); await u.message.reply_text(f"💰 Банк обновлен: {b}₽")
+    except: pass
+async def keys_cmd(u, c):
+    t = "🔑 Остаток запросов:\n"
+    for k, v in key_remaining.items(): t += f"Ключ #{k}: {v}\n"
+    await u.message.reply_text(t)
+
+# --- ИНФРАСТРУКТУРА ---
 class Health(BaseHTTPRequestHandler):
     def do_GET(self): self.send_response(200); self.end_headers(); self.wfile.write(b"OK")
     def log_message(self, format, *args): return
@@ -168,17 +207,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.run_polling()
 
-async def start_cmd(u, c): 
-    if str(u.effective_user.id) == str(ADMIN_ID): await u.message.reply_text("🚀 Monster v4.0 PRO: СЕНСОРЫ НАСТРОЕНЫ")
-async def stats_cmd(u, c):
-    s = load_stats(); await u.message.reply_text(f"📊 БАНК: {round(s['bank'], 2)}₽\n✅ {s['wins']} | ❌ {s['losses']}")
-async def set_bank_cmd(u, c):
-    try: b = float(c.args[0]); s = load_stats(); s['bank'] = b; save_stats(s); await u.message.reply_text(f"💰 Банк: {b}₽")
-    except: pass
-async def keys_cmd(u, c):
-    t = "🔑 Лимиты:\n"
-    for k, v in key_remaining.items(): t += f"Ключ #{k}: {v}\n"
-    await u.message.reply_text(t)
+if __name__ == "__main__":
+    main()
 
-if __name__ == "__main__": main()
 
