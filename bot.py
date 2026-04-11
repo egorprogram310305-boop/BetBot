@@ -24,7 +24,7 @@ ODDS_KEYS = [k.strip() for k in RAW_KEYS.split(",") if k.strip()]
 current_key_idx = 0
 key_remaining = {}
 
-# ГЛОБАЛЬНАЯ ПАМЯТЬ БОТА (Логики 1 и 3: Drop Tracking & Steam Moves)
+# ГЛОБАЛЬНАЯ ПАМЯТЬ БОТА
 odds_history = {}
 
 # Лиги
@@ -33,7 +33,7 @@ TIER_1_LEAGUES = [
     "soccer_germany_bundesliga", 
     "soccer_italy_serie_a", 
     "soccer_spain_la_liga", 
-    "soccer_france_ligue_one",  # Исправлено
+    "soccer_france_ligue_one", 
     "soccer_uefa_champs_league"
 ]
 
@@ -43,10 +43,10 @@ TIER_2_LEAGUES = [
     "soccer_portugal_primeira_liga", 
     "soccer_efl_champ", 
     "soccer_uefa_europa_league",
-    "soccer_turkey_super_league",     # Добавлено (Турция)
-    "soccer_belgium_first_division_a", # Добавлено (Бельгия)
-    "soccer_usa_mls",                 # Добавлено (МЛС - ночь)
-    "soccer_brazil_campeonato"        # Добавлено (Бразилия - ночь)
+    "soccer_turkey_super_league",     
+    "soccer_belgium_first_division_a", 
+    "soccer_usa_mls",                 
+    "soccer_brazil_campeonato"        
 ]
 
 def load_stats():
@@ -72,9 +72,9 @@ def get_fair_odds(bookies_data, market_key):
         odds = [o['price'] for o in market['outcomes']]
         inv_sum = sum(1/o for o in odds)
         
-        # ЛОГИКА 2: Защита от низкой маржи (No-Vig Accuracy)
-        # Если маржа букмекера больше 8% (1.08), рынок слишком "грязный", игнорируем
-        if inv_sum > 1.10: 
+        # ЛОГИКА 2: Защита от мусора (No-Vig Accuracy)
+        # Ставим 1.09 (9% маржи). Если больше - рынок грязный, матчи мусорные. Игнорируем.
+        if inv_sum > 1.09: 
             continue
             
         all_fair_probs.append([(1/o) / inv_sum for o in odds])
@@ -101,16 +101,13 @@ def fetch_odds(league):
             if res.status_code == 200:
                 return res.json()
             elif res.status_code in [401, 403, 429]:
-                logger.warning(f"⚠️ Ключ #{current_key_idx+1} недоступен (Код: {res.status_code}). Листаю дальше...")
                 current_key_idx = (current_key_idx + 1) % len(ODDS_KEYS)
                 continue
             elif res.status_code == 404:
                 return "IGNORE_404"
             else:
-                logger.error(f"❌ Ошибка API: {res.status_code} для {league}")
                 return None
         except Exception as e:
-            logger.error(f"❌ Ошибка соединения: {e}")
             current_key_idx = (current_key_idx + 1) % len(ODDS_KEYS)
     return None
 
@@ -153,7 +150,6 @@ async def scanner(bot):
     
     while True:
         try:
-            # Очистка памяти от старых матчей раз в день (защита от переполнения ОЗУ)
             if len(odds_history) > 15000:
                 odds_history.clear()
                 
@@ -168,7 +164,10 @@ async def scanner(bot):
                 
                 total_matches = len(data)
                 suitable_count = 0
-                edge_threshold = 0.035 if league in TIER_1_LEAGUES else 0.45
+                
+                # ИСПРАВЛЕНИЕ ОШИБКИ: 0.045 вместо 0.45
+                # 3.5% для элиты, 4.5% для остальных. Баланс качества и количества.
+                edge_threshold = 0.035 if league in TIER_1_LEAGUES else 0.045
 
                 for event in data:
                     st = datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00'))
@@ -187,16 +186,18 @@ async def scanner(bot):
                             s_odd, f_odd = outcome['price'], fair_odds[i]
                             edge = (s_odd / f_odd) - 1
                             
-                            # ЛОГИКИ 1 и 3: Дроп за круг (Steam Moves)
+                            # --- ПРОСЛУШКА ДЛЯ ЛОГОВ ---
+                            # Если есть хотя бы 1.5% перевеса, пишем в лог, чтобы ты видел, что бот работает.
+                            if edge >= 0.015:
+                                logger.info(f"🔍 {event['home_team']} | КФ BB: {s_odd} | Fair: {f_odd:.2f} | Edge: {edge*100:.1f}%")
+                            
                             uid = f"{event['id']}_{m_type}_{outcome.get('name')}_{outcome.get('point', '')}"
                             prev_f_odd = odds_history.get(uid)
                             
                             is_steam_move = False
-                            # Если в прошлом круге кф был выше, и сейчас упал на 0.05 или более - это прогруз!
                             if prev_f_odd and (prev_f_odd - f_odd >= 0.05):
                                 is_steam_move = True
                                 
-                            # Обновляем память
                             odds_history[uid] = f_odd
                             
                             if 1.65 <= s_odd <= 3.0 and edge >= edge_threshold:
@@ -222,7 +223,6 @@ async def send_signal(bot, ev, side, point, odd, edge, k_pct, m_type, is_steam_m
     market_name = "ФОРА" if m_type == 'spreads' else "ТОТАЛ" if m_type == 'totals' else "ИСХОД"
     point_str = f"({point})" if point != '' else ""
     
-    # Формируем сообщение
     text = f"<b>🔥 BETBOOM: {market_name}</b>\n\n"
     if is_steam_move:
         text += "📉 <b>ВНИМАНИЕ: ЖЕСТКИЙ ПРОГРУЗ (STEAM MOVE) В МИРЕ!</b>\n\n"
@@ -255,7 +255,3 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__": main()
-
-
-
-
