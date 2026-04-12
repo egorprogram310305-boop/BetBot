@@ -12,11 +12,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- НАСТРОЙКИ ---
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger("MonsterV4.1_Fixed")
+logger = logging.getLogger("MonsterV4.2_Debug")
 
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = os.getenv("CHAT_ID")
-TIME_OFFSET = 3 
 
 RAW_KEYS = os.getenv("ODDS_API_KEYS", "")
 ODDS_KEYS = [k.strip() for k in RAW_KEYS.split(",") if k.strip()]
@@ -25,7 +24,6 @@ current_key_idx = 0
 key_remaining = {}
 odds_history = {}
 
-# Лиги разделены по уровням для гибких порогов Edge
 TIER_1_LEAGUES = ["soccer_epl", "soccer_germany_bundesliga", "soccer_italy_serie_a", "soccer_spain_la_liga", "soccer_france_ligue_one", "soccer_uefa_champs_league"]
 TIER_2_LEAGUES = ["soccer_russia_premier_league", "soccer_netherlands_ere_divisie", "soccer_portugal_primeira_liga", "soccer_efl_champ", "soccer_uefa_europa_league", "soccer_turkey_super_league", "soccer_belgium_first_division_a", "soccer_usa_mls", "soccer_brazil_campeonato"]
 
@@ -53,10 +51,7 @@ def get_fair_odds(bookies_data, market_key):
         
         odds = [o['price'] for o in market['outcomes']]
         inv_sum = sum(1/o for o in odds)
-        
-        # Расширенная маржа до 1.12 для захвата Tier-2 рынков
         if inv_sum > 1.12: continue
-            
         all_fair_probs.append([(1/o) / inv_sum for o in odds])
         
     if not all_fair_probs: return None
@@ -84,31 +79,36 @@ def fetch_odds(league):
 
 # --- ГЛАВНЫЙ СКАНЕР ---
 async def scanner(bot):
-    logger.info("🚀 МОНИТОРИНГ ЗАПУЩЕН (EDGE: 3.0%-3.5%)")
+    logger.info("🚀 МОНИТОРИНГ ЗАПУЩЕН В РЕЖИМЕ ДИАГНОСТИКИ")
     global odds_history
     while True:
         try:
-            if len(odds_history) > 15000: odds_history.clear()
-            
             all_leagues = TIER_1_LEAGUES + TIER_2_LEAGUES
             for league in all_leagues:
                 data = await asyncio.to_thread(fetch_odds, league)
-                if data is None or not isinstance(data, list): continue
                 
-                # Мягкие пороги для выходных
-                edge_threshold = 0.030 if league in TIER_1_LEAGUES else 0.035
+                if data is None:
+                    logger.error(f"❌ {league}: Ошибка API (проверьте ключи)")
+                    continue
+                
+                # ДИАГНОСТИКА: Сколько матчей видит API?
+                logger.info(f"📡 {league}: Получено {len(data)} матчей")
 
                 for event in data:
+                    # ДИАГНОСТИКА: Есть ли BetBoom в этом матче?
+                    bb = next((b for b in event['bookmakers'] if b['key'] == 'betboom'), None)
+                    if not bb: continue
+                    
                     st = datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00'))
                     diff_h = (st - datetime.now(timezone.utc)).total_seconds() / 3600
+                    
+                    # ДИАГНОСТИКА: Проходит ли по времени? (от 15 мин до 48 часов)
                     if not (0.25 < diff_h < 48): continue
                     
                     for m_type in ['h2h', 'totals', 'spreads']:
                         fair_odds = get_fair_odds(event['bookmakers'], m_type)
                         if not fair_odds: continue
                         
-                        bb = next((b for b in event['bookmakers'] if b['key'] == 'betboom'), None)
-                        if not bb: continue
                         market = next((m for m in bb['markets'] if m['key'] == m_type), None)
                         if not market: continue
                         
@@ -116,11 +116,11 @@ async def scanner(bot):
                             s_odd, f_odd = outcome['price'], fair_odds[i]
                             edge = (s_odd / f_odd) - 1
                             
-                            # Логирование подозрительных матчей в консоль Render
-                            if edge >= 0.015:
-                                logger.info(f"🔍 {event['home_team']} | КФ: {s_odd} | Edge: {edge*100:.1f}%")
-                            
-                            # Основной фильтр: кэфы 1.5 - 4.0
+                            # ЛОГ ДЛЯ ЛЮБОГО ВАЛУЯ (даже 1%):
+                            if edge >= 0.01:
+                                logger.info(f"🔍 ВАЛУЙ: {event['home_team']} | {outcome.get('name')} | КФ:{s_odd} | Edge:{round(edge*100,2)}%")
+
+                            edge_threshold = 0.030 if league in TIER_1_LEAGUES else 0.035
                             if 1.50 <= s_odd <= 4.0 and edge >= edge_threshold:
                                 uid = f"{event['id']}_{m_type}_{outcome.get('name')}_{outcome.get('point', '')}"
                                 prev_f_odd = odds_history.get(uid)
@@ -133,6 +133,7 @@ async def scanner(bot):
                                 await send_signal(bot, event, outcome.get('name', 'N/A'), outcome.get('point', ''), s_odd, edge, kelly_pct, m_type, is_steam)
                 
                 await asyncio.sleep(1)
+            logger.info("🛌 Круг завершен. Пауза 4 мин.")
             await asyncio.sleep(240)
         except Exception:
             logger.error(f"❌ Ошибка сканера: {traceback.format_exc()}")
@@ -155,41 +156,26 @@ async def send_signal(bot, ev, side, point, odd, edge, k_pct, m_type, is_steam_m
     kb = [[InlineKeyboardButton("✅ WIN", callback_data=f"w_{rub}_{odd}"), InlineKeyboardButton("❌ LOSS", callback_data=f"l_{rub}")]]
     await bot.send_message(ADMIN_ID, text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
 
-# --- ОБРАБОТКА КНОПОК ---
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data.split('_')
-    action = data[0]
+    action, amount, price = data[0], float(data[1]), float(data[2]) if len(data)>2 else 0
     s = load_stats()
-
     if action == 'w':
-        profit = float(data[1]) * (float(data[2]) - 1)
-        s['bank'] += profit; s['wins'] += 1
-        res = f"✅ +{round(profit, 2)}₽"
-    elif action == 'l':
-        loss = float(data[1])
-        s['bank'] -= loss; s['losses'] += 1
-        res = f"❌ -{round(loss, 2)}₽"
-
+        profit = amount * (price - 1); s['bank'] += profit; s['wins'] += 1; res = f"✅ +{round(profit, 2)}₽"
+    else:
+        s['bank'] -= amount; s['losses'] += 1; res = f"❌ -{round(amount, 2)}₽"
     save_stats(s)
-    new_text = query.message.text + f"\n\nИТОГ: {res}\n💰 БАНК: {round(s['bank'], 2)}₽"
-    await query.edit_message_text(text=new_text, parse_mode="HTML")
+    await query.edit_message_text(text=query.message.text + f"\n\nИТОГ: {res}\n💰 БАНК: {round(s['bank'], 2)}₽", parse_mode="HTML")
 
-# --- КОМАНДЫ ---
-async def start_cmd(u, c): 
-    if str(u.effective_user.id) == str(ADMIN_ID): await u.message.reply_text("🚀 Monster v4.1: СИСТЕМА ОНЛАЙН")
+async def start_cmd(u, c): await u.message.reply_text("🚀 Monster v4.2 Diagnostic Online")
 async def stats_cmd(u, c):
     s = load_stats(); await u.message.reply_text(f"📊 БАНК: {round(s['bank'], 2)}₽\n✅ {s['wins']} | ❌ {s['losses']}")
-async def set_bank_cmd(u, c):
-    try: b = float(c.args[0]); s = load_stats(); s['bank'] = b; save_stats(s); await u.message.reply_text(f"💰 Банк обновлен: {b}₽")
-    except: pass
 async def keys_cmd(u, c):
-    t = "🔑 Остаток запросов:\n"
-    for k, v in key_remaining.items(): t += f"Ключ #{k}: {v}\n"
+    t = "🔑 Ключи:\n" + "\n".join([f"#{k}: {v}" for k, v in key_remaining.items()])
     await u.message.reply_text(t)
 
-# --- ИНФРАСТРУКТУРА ---
 class Health(BaseHTTPRequestHandler):
     def do_GET(self): self.send_response(200); self.end_headers(); self.wfile.write(b"OK")
     def log_message(self, format, *args): return
@@ -200,14 +186,8 @@ def main():
     port = int(os.environ.get("PORT", 10000))
     threading.Thread(target=lambda: HTTPServer(('0.0.0.0', port), Health).serve_forever(), daemon=True).start()
     app = Application.builder().token(TOKEN).post_init(post_init).build()
-    app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler("stats", stats_cmd))
-    app.add_handler(CommandHandler("setbank", set_bank_cmd))
-    app.add_handler(CommandHandler("keys", keys_cmd))
-    app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(CommandHandler("start", start_cmd)); app.add_handler(CommandHandler("stats", stats_cmd))
+    app.add_handler(CommandHandler("keys", keys_cmd)); app.add_handler(CallbackQueryHandler(handle_callback))
     app.run_polling()
 
-if __name__ == "__main__":
-    main()
-
-
+if __name__ == "__main__": main()
