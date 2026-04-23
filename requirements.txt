@@ -1,4 +1,5 @@
 python-telegram-bot==20.8
+aiogram
 requests
 aiohttp
-aiogram
+googletrans==3.1.0a0
