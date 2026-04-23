@@ -4,38 +4,56 @@ import logging
 import requests
 import time
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from aiohttp import web
-from googletrans import Translator
+from deep_translator import GoogleTranslator
 
 # --- НАСТРОЙКИ ЛОГИРОВАНИЯ ---
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()] # Печать в консоль Render
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger("UltraBetBot")
+logger = logging.getLogger("BetBot_Pro")
 
+# --- ПЕРЕМЕННЫЕ ---
 TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHAT_ID")
 API_KEYS = [k.strip() for k in os.getenv("ODDS_API_KEYS", "").split(",") if k.strip()]
+STATS_FILE = "stats.json"
 
-translator = Translator()
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# --- ХРАНИЛИЩЕ ДАННЫХ ---
-STATS_FILE = "stats.json"
+class BotState:
+    start_time = time.time()
+    total_scans = 0
+    current_key_idx = 0
+    key_limits = {}
+
+state = BotState()
+
+# --- ФУНКЦИИ ПЕРЕВОДА И СТАТИСТИКИ ---
+def safe_translate(text):
+    """Исправленная функция перевода через deep-translator"""
+    try:
+        if not text: return text
+        return GoogleTranslator(source='en', target='ru').translate(text)
+    except Exception as e:
+        logger.error(f"❌ Ошибка перевода '{text}': {e}")
+        return text
 
 def load_stats():
     if not os.path.exists(STATS_FILE):
         return {"results": []}
-    with open(STATS_FILE, "r") as f:
-        return json.load(f)
+    try:
+        with open(STATS_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {"results": []}
 
 def save_result(is_win, odds):
     stats = load_stats()
@@ -47,20 +65,11 @@ def save_result(is_win, odds):
     with open(STATS_FILE, "w") as f:
         json.dump(stats, f)
 
-# --- ЛОГИКА АНАЛИЗА ---
-def analyze_motivation(event, league_key):
-    """Имитация фильтра мотивации на основе статуса матча"""
-    score = 0
-    # В топ-лигах мотивация выше в конце и начале сезона
-    top_leagues = ["soccer_epl", "soccer_uefa_champs_league", "soccer_germany_bundesliga"]
-    if league_key in top_leagues:
-        score += 1
-    return score
-
-def get_best_prediction(event, league_key):
+# --- АНАЛИЗ МАТЧЕЙ ---
+def get_best_prediction(event, league_name):
     bb = next((b for b in event['bookmakers'] if b['key'] == 'betboom'), None)
-    if not bb: 
-        logger.warning(f"⚠️ Betboom не найден для матча {event['home_team']}")
+    if not bb:
+        logger.info(f"跳 Пропуск: {event['home_team']} - нет кэфов Betboom")
         return None
 
     picks = []
@@ -69,10 +78,15 @@ def get_best_prediction(event, league_key):
     if h2h:
         for outcome in h2h['outcomes']:
             price = outcome['price']
-            if 1.60 <= price <= 2.20:
-                score = 3 + analyze_motivation(event, league_key)
+            # Фильтр ROI+: кэфы от 1.60 до 2.30
+            if 1.60 <= price <= 2.30:
+                # Базовый балл 3 + бонус за "сильную" лигу (мотивация)
+                score = 3
+                if any(x in league_name.lower() for x in ["англия", "германия", "лига чемпионов"]):
+                    score += 1
+                
                 picks.append({
-                    "pick": f"Победа: {outcome['name']}",
+                    "pick": f"Победа: {safe_translate(outcome['name'])}",
                     "odds": price,
                     "score": score
                 })
@@ -81,128 +95,126 @@ def get_best_prediction(event, league_key):
 
 # --- СКАНЕР ---
 async def scanner():
+    leagues = ["soccer_epl", "soccer_germany_bundesliga", "soccer_italy_serie_a", "soccer_spain_la_liga", "soccer_france_ligue_one", "soccer_uefa_champs_league"]
+    
     while True:
-        logger.info(f"🚀 Запуск нового цикла сканирования...")
-        if not API_KEYS:
-            logger.error("❌ Список API ключей пуст!")
-            await asyncio.sleep(60)
-            continue
-
-        for league_key in ["soccer_epl", "soccer_germany_bundesliga", "soccer_italy_serie_a", "soccer_spain_la_liga"]:
-            key = API_KEYS[0] # Упростим для примера ротацию
-            url = f"https://api.the-odds-api.com/v4/sports/{league_key}/odds/"
-            params = {'apiKey': key, 'regions': 'eu', 'markets': 'h2h', 'bookmakers': 'betboom'}
-            
-            try:
-                logger.info(f"📡 Запрос лиги {league_key}...")
-                res = requests.get(url, params=params, timeout=15)
+        logger.info(f"--- 🔄 ЦИКЛ СКАНИРОВАНИЯ №{state.total_scans + 1} ---")
+        
+        for league_key in leagues:
+            if not API_KEYS:
+                logger.error("❌ Нет API ключей в ODDS_API_KEYS!")
+                break
                 
-                if res.status_code != 200:
-                    logger.error(f"❌ Ошибка API {res.status_code}: {res.text}")
-                    continue
+            current_key = API_KEYS[state.current_key_idx]
+            url = f"https://api.the-odds-api.com/v4/sports/{league_key}/odds/"
+            params = {'apiKey': current_key, 'regions': 'eu', 'markets': 'h2h', 'bookmakers': 'betboom'}
 
-                data = res.json()
-                logger.info(f"✅ Получено {len(data)} матчей для {league_key}")
+            try:
+                logger.info(f"📡 Запрос {league_key} (Ключ №{state.current_key_idx + 1})")
+                res = requests.get(url, params=params, timeout=20)
+                
+                if res.status_code == 200:
+                    state.key_limits[current_key] = res.headers.get('x-requests-remaining', '0')
+                    data = res.json()
+                    
+                    for event in data:
+                        # 1. Фильтр по времени (ближайшие 4 часа)
+                        commence_time = datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00'))
+                        time_diff = (commence_time - datetime.now(timezone.utc)).total_seconds() / 3600
 
-                for event in data:
-                    # 1) Фильтр на 4 часа вперед
-                    commence_time = datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00'))
-                    now = datetime.now(timezone.utc)
-                    time_diff = (commence_time - now).total_seconds() / 3600
-
-                    if 0 < time_diff <= 4:
-                        logger.info(f"🔍 Анализ матча: {event['home_team']} (через {round(time_diff, 1)} ч.)")
-                        best = get_best_prediction(event, league_key)
+                        if 0 < time_diff <= 4:
+                            best = get_best_prediction(event, league_key)
+                            if best:
+                                home_ru = safe_translate(event['home_team'])
+                                away_ru = safe_translate(event['away_team'])
+                                
+                                # Кнопки учета
+                                kb = InlineKeyboardBuilder()
+                                kb.button(text="✅ ВИН", callback_data=f"res_w_{best['odds']}")
+                                kb.button(text="❌ ЛОСС", callback_data=f"res_l_{best['odds']}")
+                                
+                                text = (
+                                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"🏆 <b>ГОРЯЧИЙ ПРОГНОЗ</b>\n"
+                                    f"⚽️ <b>{home_ru} — {away_ru}</b>\n"
+                                    f"⏰ Начало через: {round(time_diff, 1)} ч.\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                                    f"✅ <b>Ставка:</b> <code>{best['pick']}</code>\n"
+                                    f"📈 <b>Коэффициент:</b> <code>{best['odds']}</code>\n"
+                                    f"🔥 <b>Уверенность:</b> {'🔥' * best['score']}\n\n"
+                                    f"📍 <b>БК:</b> Betboom\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━"
+                                )
+                                await bot.send_message(CHANNEL_ID, text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+                                logger.info(f"✅ Отправлен прогноз на {home_ru}")
+                                await asyncio.sleep(10) # Защита от спама
                         
-                        if best and best['score'] >= 3:
-                            # Кнопки результата
-                            kb = InlineKeyboardBuilder()
-                            kb.button(text="✅ ВИН", callback_data=f"win_{best['odds']}")
-                            kb.button(text="❌ ЛОСС", callback_data=f"loss_{best['odds']}")
-                            
-                            text = (
-                                f"🏆 <b>СРОЧНЫЙ ПРОГНОЗ (до начала < 4ч)</b>\n"
-                                f"⚽️ {event['home_team']} — {event['away_team']}\n\n"
-                                f"✅ Ставка: {best['pick']}\n"
-                                f"📈 Кф: {best['odds']}\n"
-                                f"🔥 Уверенность: {'🔥' * best['score']}"
-                            )
-                            await bot.send_message(CHANNEL_ID, text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
-                            await asyncio.sleep(5)
-                    else:
-                        continue
+                elif res.status_code in [401, 429]:
+                    logger.warning(f"⚠️ Ключ №{state.current_key_idx + 1} исчерпан. Переключаюсь...")
+                    state.current_key_idx = (state.current_key_idx + 1) % len(API_KEYS)
+                else:
+                    logger.error(f"❌ Ошибка API {res.status_code}: {res.text}")
 
             except Exception as e:
-                logger.error(f"💥 Критическая ошибка в сканере: {e}", exc_info=True)
+                logger.error(f"💥 Ошибка в процессе: {e}")
 
-        logger.info("🛌 Цикл завершен. Сон 30 мин.")
+        state.total_scans += 1
+        logger.info(f"😴 Цикл завершен. Сон 30 минут.")
         await asyncio.sleep(1800)
 
-# --- ОБРАБОТКА КНОПОК РЕЗУЛЬТАТА ---
-@dp.callback_query(F.data.startswith("win_") | F.data.startswith("loss_"))
-async def process_result(callback: types.CallbackQuery):
-    data = callback.data.split("_")
-    is_win = data[0] == "win"
-    odds = float(data[1])
+# --- ОБРАБОТЧИКИ ---
+@dp.callback_query(F.data.startswith("res_"))
+async def handle_result(callback: types.CallbackQuery):
+    _, result, odds = callback.data.split("_")
+    is_win = (result == "w")
+    save_result(is_win, float(odds))
     
-    save_result(is_win, odds)
-    
-    status = "✅ ЗАШЛО" if is_win else "❌ МИМО"
-    await callback.message.edit_text(callback.message.text + f"\n\n<b>ИТОГ: {status}</b>", parse_mode=ParseMode.HTML)
-    await callback.answer("Результат записан в статистику!")
+    await callback.message.edit_reply_markup(reply_markup=None) # Убираем кнопки
+    status_text = "💰 ВЫИГРЫШ!" if is_win else "📉 ПРОИГРЫШ"
+    await callback.message.reply(f"<b>Результат записан: {status_text}</b>", parse_mode=ParseMode.HTML)
+    await callback.answer()
 
-# --- РАСЧЕТ ROI ---
-def calculate_roi(days):
-    stats = load_stats()
-    cutoff = time.time() - (days * 86400)
-    relevant = [r for r in stats["results"] if r["time"] > cutoff]
-    
-    if not relevant: return "0% (нет данных)"
-    
-    total_bets = len(relevant)
-    profit = 0
-    for r in relevant:
-        if r["win"]:
-            profit += (r["odds"] - 1)
-        else:
-            profit -= 1
-            
-    roi = (profit / total_bets) * 100
-    return f"{round(roi, 2)}% (Всего ставок: {total_bets})"
-
-@dp.message(F.text == "📊 ROI Статистика")
-async def show_roi(message: types.Message):
-    text = (
-        f"📈 <b>Ваша статистика:</b>\n\n"
-        f"📅 За 24 часа: {calculate_roi(1)}\n"
-        f"📅 За неделю: {calculate_roi(7)}\n"
-        f"📅 За месяц: {calculate_roi(30)}"
-    )
-    await message.answer(text, parse_mode=ParseMode.HTML)
-
-# --- ИНТЕРФЕЙС И ЗАПУСК ---
 @dp.message(Command("start"))
-async def start(m: types.Message):
+async def cmd_start(m: types.Message):
     kb = ReplyKeyboardBuilder()
-    kb.button(text="📊 ROI Статистика")
-    await m.answer("Система готова. Кнопки ROI под постом помогут вести учет.", reply_markup=kb.as_markup(resize_keyboard=True))
+    kb.button(text="📈 Статистика ROI"); kb.button(text="🔑 Ключи")
+    await m.answer("🤖 Бот запущен. ROI считается автоматически по вашим отметкам.", 
+                   reply_markup=kb.as_markup(resize_keyboard=True))
 
-async def handle(r): return web.Response(text="OK")
+@dp.message(F.text == "📈 Статистика ROI")
+async def show_roi(m: types.Message):
+    stats = load_stats()
+    def calc(days):
+        cutoff = time.time() - (days * 86400)
+        hits = [r for r in stats["results"] if r["time"] > cutoff]
+        if not hits: return "Данных нет"
+        profit = sum((r["odds"] - 1) if r["win"] else -1 for r in hits)
+        roi = (profit / len(hits)) * 100
+        return f"{round(roi, 1)}% (Ставок: {len(hits)})"
+
+    await m.answer(f"📊 <b>Ваш ROI:</b>\n\nДень: {calc(1)}\nНеделя: {calc(7)}\nМесяц: {calc(30)}", parse_mode=ParseMode.HTML)
+
+@dp.message(F.text == "🔑 Ключи")
+async def show_keys(m: types.Message):
+    text = "🔑 <b>Состояние ключей:</b>\n"
+    for i, k in enumerate(API_KEYS):
+        lim = state.key_limits.get(k, '???')
+        text += f"{i+1}. <code>{k[:5]}...</code> | Остаток: {lim}\n"
+    await m.answer(text, parse_mode=ParseMode.HTML)
+
+# --- ЗАПУСК ---
+async def handle_health(request): return web.Response(text="Бот в сети", status=200)
 
 async def main():
-    # Создаем пустой файл статов если нет
-    if not os.path.exists(STATS_FILE):
-        with open(STATS_FILE, "w") as f: json.dump({"results": []}, f)
-        
     app = web.Application()
-    app.router.add_get("/", handle)
+    app.router.add_get("/", handle_health)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 10000)))
     await site.start()
+    
     asyncio.create_task(scanner())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
-
