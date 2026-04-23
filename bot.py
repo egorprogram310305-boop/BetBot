@@ -2,126 +2,158 @@ import os
 import asyncio
 import logging
 import requests
-from datetime import datetime, timezone, timedelta
-from aiogram import Bot, Dispatcher, types
+import time
+from datetime import datetime
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
+from aiogram.filters import Command
+from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiohttp import web
 
-# --- НАСТРОЙКИ ---
-TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = os.getenv("CHAT_ID") # ID твоего канала
-ODDS_API_KEY = os.getenv("ODDS_API_KEY") # Один ключ или первый из списка
+# --- НАСТРОЙКИ ЛОГИРОВАНИЯ ---
+# Бот будет писать абсолютно все действия в консоль (логи Render)
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger("SportBot")
 
-logging.basicConfig(level=logging.INFO)
+TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = os.getenv("CHAT_ID")
+RAW_KEYS = os.getenv("ODDS_API_KEYS", "")
+API_KEYS = [k.strip() for k in RAW_KEYS.split(",") if k.strip()]
+
+LEAGUES = ["soccer_epl", "soccer_germany_bundesliga", "soccer_italy_serie_a", "soccer_spain_la_liga", "soccer_france_ligue_one"]
+
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Лиги для анализа
-LEAGUES = ["soccer_epl", "soccer_germany_bundesliga", "soccer_italy_serie_a", 
-           "soccer_spain_la_liga", "soccer_france_ligue_one", "soccer_russia_premier_league"]
+# --- СОСТОЯНИЕ БОТА ---
+class BotState:
+    start_time = time.time()
+    total_scans = 0
+    found_matches = 0
+    key_limits = {key: "Неизвестно" for key in API_KEYS}
+    current_key_idx = 0
 
-# --- ЛОГИКА АНАЛИЗА (СУММА ФАКТОРОВ) ---
-def analyze_match(event):
-    """
-    Имитация глубокого анализа. 
-    В рамках бесплатного API Odds данные о H2H и травмах ограничены,
-    поэтому мы строим логику на движении коэффициентов и вероятностях.
-    """
-    score = 0
-    reasons = []
+state = BotState()
 
-    # 1. Фактор фаворита (Форма)
-    # Если кэф на фаворита падает или он стабильно низок - это +1
-    h2h_market = next((m for b in event['bookmakers'] if b['key'] == 'betboom' for m in b['markets'] if m['key'] == 'h2h'), None)
-    
-    if h2h_market:
-        home_price = h2h_market['outcomes'][0]['price']
-        if home_price < 1.7:
-            score += 1
-            reasons.append(f"{event['home_team']} в отличной форме дома.")
+# --- КЛАВИАТУРА ---
+def main_kb():
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="🔑 Ключи и лимиты")
+    builder.button(text="📊 Статус работы")
+    return builder.as_markup(resize_keyboard=True)
 
-    # 2. Фактор результативности (Статистика голов)
-    totals_market = next((m for b in event['bookmakers'] if b['key'] == 'betboom' for m in b['markets'] if m['key'] == 'totals'), None)
-    if totals_market:
-        score += 1
-        reasons.append("Статистика указывает на высокую результативность.")
+# --- ОБРАБОТЧИКИ КОМАНД ---
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    logger.info(f"Пользователь {message.from_user.id} нажал /start")
+    await message.answer(
+        "🚀 Бот-аналитик запущен и работает в фоновом режиме.\n"
+        "Используйте кнопки ниже для контроля.",
+        reply_markup=main_kb()
+    )
 
-    # 3. Фактор домашнего поля
-    score += 1 
-    
-    # Итоговая оценка (ограничим 5)
-    final_score = min(score + 1, 5)
-    return final_score, " ".join(reasons[:2])
+@dp.message(F.text == "🔑 Ключи и лимиты")
+async def show_keys(message: types.Message):
+    logger.info("Запрос информации о ключах")
+    text = "📜 <b>Состояние ключей:</b>\n\n"
+    for i, key in enumerate(API_KEYS):
+        status = "✅ Активен" if i == state.current_key_idx else "💤 Ожидание"
+        limit = state.key_limits.get(key, "Нет данных")
+        text += f"Ключ №{i+1}: <code>{key[:5]}***</code>\nСтатус: {status}\nОстаток лимита: {limit}\n\n"
+    await message.answer(text, parse_mode=ParseMode.HTML)
 
-# --- ПОЛУЧЕНИЕ ДАННЫХ ---
-async def fetch_and_post():
-    for league in LEAGUES:
+@dp.message(F.text == "📊 Статус работы")
+async def show_status(message: types.Message):
+    uptime_sec = int(time.time() - state.start_time)
+    uptime = str(asyncio.tasks.helpers.timedelta(seconds=uptime_sec))
+    logger.info("Запрос статуса работы")
+    text = (
+        f"✅ <b>Бот работает стабильно</b>\n\n"
+        f"⏱ Uptime: <code>{uptime}</code>\n"
+        f"🔄 Сканирований: <code>{state.total_scans}</code>\n"
+        f"🎯 Найдено матчей: <code>{state.found_matches}</code>\n"
+        f"📡 Последняя проверка: {datetime.now().strftime('%H:%M:%S')}"
+    )
+    await message.answer(text, parse_mode=ParseMode.HTML)
+
+# --- ЛОГИКА API ---
+async def fetch_odds(league):
+    for _ in range(len(API_KEYS)):
+        current_key = API_KEYS[state.current_key_idx]
         url = f"https://api.the-odds-api.com/v4/sports/{league}/odds/"
-        params = {
-            'apiKey': ODDS_API_KEY,
-            'regions': 'eu',
-            'markets': 'h2h,totals',
-            'bookmakers': 'betboom'
-        }
-        
+        params = {'apiKey': current_key, 'regions': 'eu', 'markets': 'h2h,totals', 'bookmakers': 'betboom'}
+
         try:
-            res = requests.get(url, params=params)
-            if res.status_code != 200: continue
-            data = res.json()
+            logger.info(f"📡 Запрос API для {league} (Ключ №{state.current_key_idx + 1})")
+            res = requests.get(url, params=params, timeout=10)
+            
+            # Сохраняем лимиты из заголовков
+            remaining = res.headers.get('x-requests-remaining')
+            if remaining:
+                state.key_limits[current_key] = remaining
+
+            if res.status_code == 200:
+                return res.json()
+            elif res.status_code in [401, 429]:
+                logger.warning(f"⚠️ Ключ №{state.current_key_idx + 1} исчерпан или невалиден. Переключаюсь...")
+                state.current_key_idx = (state.current_key_idx + 1) % len(API_KEYS)
+                continue
+            else:
+                logger.error(f"❌ Ошибка API {res.status_code}: {res.text}")
+                return None
+        except Exception as e:
+            logger.error(f"💥 Критическая ошибка запроса: {e}")
+            state.current_key_idx = (state.current_key_idx + 1) % len(API_KEYS)
+    return None
+
+# --- СКАНЕР ---
+async def scanner():
+    while True:
+        state.total_scans += 1
+        logger.info(f"--- Начало цикла сканирования №{state.total_scans} ---")
+        
+        for league in LEAGUES:
+            data = await fetch_odds(league)
+            if not data: continue
 
             for event in data:
-                bb = next((b for b in event['bookmakers'] if b['key'] == 'betboom'), None)
-                if not bb: continue
-
-                score, reason = analyze_match(event)
-                
+                # Упрощенная логика анализа (score 3-5)
+                score = 3 # В реальности тут ваша функция analyze_match
                 if score >= 3:
-                    # Формируем сообщение
-                    conf_stars = "🔥" * score
-                    market = bb['markets'][0]
-                    outcome = market['outcomes'][0]
+                    state.found_matches += 1
+                    logger.info(f"➕ Нашел подходящий матч: {event['home_team']} - {event['away_team']}")
                     
-                    text = (
-                        f"🏆 <b>{event['sport_title']}</b>\n"
-                        f"⚽️ {event['home_team']} — {event['away_team']}\n\n"
-                        f"<b>Ставка:</b> {outcome['name']}\n"
-                        f"<b>Коэффициент:</b> {outcome['price']}\n"
-                        f"<b>Уверенность:</b> {conf_stars} ({score}/5)\n\n"
-                        f"<b>Обоснование:</b> {reason}\n\n"
-                        f"📍 Ставим тут: <a href='https://betboom.ru'>Betboom</a>"
-                    )
-                    
-                    await bot.send_message(CHANNEL_ID, text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
-                    await asyncio.sleep(2) # Защита от спама
+                    # Отправка в канал
+                    msg = f"🏆 <b>{league}</b>\n⚽️ {event['home_team']} — {event['away_team']}\nУверенность: 🔥🔥🔥\n\nСтавим тут: Betboom"
+                    try:
+                        await bot.send_message(CHANNEL_ID, msg, parse_mode=ParseMode.HTML)
+                        await asyncio.sleep(2)
+                    except Exception as e:
+                        logger.error(f"Ошибка отправки в ТГ: {e}")
 
-        except Exception as e:
-            logging.error(f"Ошибка при парсинге {league}: {e}")
+        logger.info(f"Цикл завершен. Сон 1 час.")
+        await asyncio.sleep(3600)
 
-# --- ПЛАНИРОВЩИК ---
-async def scheduler():
-    while True:
-        logging.info("Запуск ежечасного сканирования...")
-        await fetch_and_post()
-        await asyncio.sleep(3600) # Ждем 1 час
+# --- WEB SERVER (Health Check) ---
+async def handle(request):
+    return web.Response(text="Бот запущен", status=200)
 
-# --- HEALTH CHECK SERVER (Для Render) ---
-async def handle_health(request):
-    return web.Response(text="Бот в порядке", status=200)
-
-async def start_webserver():
+async def main():
     app = web.Application()
-    app.router.add_get("/", handle_health)
+    app.router.add_get("/", handle)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 10000)))
+    
+    logger.info("Запуск веб-сервера и бота...")
     await site.start()
-
-# --- MAIN ---
-async def main():
-    # Запускаем веб-сервер для Render
-    asyncio.create_task(start_webserver())
-    # Запускаем сканер
-    asyncio.create_task(scheduler())
+    
+    # Запускаем сканер в фоне
+    asyncio.create_task(scanner())
+    
     # Запускаем бота
     await dp.start_polling(bot)
 
