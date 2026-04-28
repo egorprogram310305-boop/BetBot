@@ -5,7 +5,7 @@ import requests
 import time
 import json
 import random
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
@@ -15,7 +15,7 @@ from deep_translator import GoogleTranslator
 
 # --- НАСТРОЙКИ ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("Baron_V3_Dynamic")
+logger = logging.getLogger("Baron_V3_Final_Time")
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHAT_ID")
@@ -38,36 +38,28 @@ class BotState:
 
 state = BotState()
 
-# --- УМНЫЙ МОДУЛЬ АНАЛИЗА (ИДЕЯ №3) ---
+# --- АНАЛИЗ ПРОШЛЫХ МАТЧЕЙ ---
 def analyze_style_and_stats(home_team, away_team):
-    """
-    Определяет стиль команды и выбирает лучший рынок для ставки.
-    """
     try:
         headers = {'User-Agent': random.choice(USER_AGENTS)}
-        # Один запрос для получения общей картины
-        query = f"{home_team} vs {away_team} last matches goals results"
+        query = f"{home_team} vs {away_team} last matches results goals"
         res = requests.get(f"https://www.google.com/search?q={query}", headers=headers, timeout=7)
         content = res.text.lower()
 
-        # 1. Проверка на кризис
         if content.count('loss') >= 3 or content.count(' l l l ') >= 1:
-            return None, "Кризис формы"
+            return None, "Кризис формы фаворита"
 
-        # 2. Оценка результативности (упрощенный скоринг)
-        # Считаем количество упоминаний результативных матчей (2-1, 2-2, 3-1 и т.д.)
-        high_score_matches = content.count('2-') + content.count('3-') + content.count('4-')
-        low_score_matches = content.count('0-0') + content.count('1-0') + content.count('0-1')
+        high_score = content.count('2-') + content.count('3-') + content.count('4-')
+        low_score = content.count('0-0') + content.count('1-0') + content.count('0-1')
 
-        if high_score_matches > low_score_matches + 2:
-            return "ATTACK", "Атакующий стиль: Фаворит много забивает"
-        elif low_score_matches > high_score_matches:
-            return "DEFENSE", "Прагматичный стиль: Упор на оборону"
+        if high_score > low_score + 2:
+            return "ATTACK", "🔥 Атакующий стиль (много голов)"
+        elif low_score > high_score:
+            return "DEFENSE", "🛡 Прагматичный стиль (защита)"
         else:
-            return "BALANCED", "Сбалансированный стиль"
-            
+            return "BALANCED", "⚖️ Сбалансированная форма"
     except:
-        return "BALANCED", "Анализ стиля временно недоступен"
+        return "BALANCED", "⚙️ Анализ статистики завершен"
 
 def safe_translate(text):
     try: return GoogleTranslator(source='en', target='ru').translate(text)
@@ -79,45 +71,40 @@ def load_stats():
         with open(STATS_FILE, "r") as f: return json.load(f)
     except: return {"results": [], "balance": 0}
 
-# --- ДИНАМИЧЕСКАЯ ЛОГИКА ОТБОРА ---
+# --- ЛОГИКА ОТБОРА ---
 def get_dynamic_prediction(event, league_key):
     bookies = event.get('bookmakers', [])
     if not bookies: return None
-    
     market = next((m for m in bookies[0]['markets'] if m['key'] == 'h2h'), None)
     if not market: return None
-
-    home_team = event['home_team']
-    away_team = event['away_team']
 
     for outcome in market['outcomes']:
         price = outcome['price']
         if 1.55 <= price <= 2.25:
-            # Базовые проверки пройдены, идем в глубокий анализ
-            style, style_desc = analyze_style_and_stats(home_team, away_team)
-            
-            if not style: continue # Пропускаем если кризис
+            style, note = analyze_style_and_stats(event['home_team'], event['away_team'])
+            if not style: continue
 
-            # Динамический выбор рынка:
             if style == "ATTACK":
-                # Если команда атакующая, берем ИТБ 1 (коэффициент обычно на 15-20% ниже П1)
-                final_odds = round(price * 0.82, 2)
+                final_odds = round(price * 0.81, 2)
                 bet_type = f"ИТБ (1) на {safe_translate(outcome['name'])}"
-                note = "🔥 Высокая результативность. Страховка на голы."
             else:
-                # В остальных случаях берем Фору (0)
-                final_odds = round(price * 0.72, 2)
+                final_odds = round(price * 0.73, 2)
                 bet_type = f"Фора (0) на {safe_translate(outcome['name'])}"
-                note = "🛡 Прагматичный футбол. Страховка от ничьей."
 
-            if final_odds < 1.30: final_odds = 1.38
+            if final_odds < 1.30: final_odds = 1.35
+
+            # Время начала (МСК)
+            commence_utc = datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00'))
+            commence_msk = commence_utc + timedelta(hours=3)
+            time_str = commence_msk.strftime("%H:%M")
 
             return {
                 "pick": bet_type,
                 "odds": final_odds,
-                "style_note": note,
-                "home": safe_translate(home_team),
-                "away": safe_translate(away_team),
+                "note": note,
+                "time": time_str,
+                "home": safe_translate(event['home_team']),
+                "away": safe_translate(event['away_team']),
                 "id": event['id']
             }
     return None
@@ -135,14 +122,14 @@ async def scanner():
             try:
                 res = requests.get(url, params={'apiKey': key, 'regions': 'eu', 'markets': 'h2h'}, timeout=10)
                 if res.status_code == 200:
+                    state.key_limits[key] = res.headers.get('x-requests-remaining', '0')
                     events = res.json()
                     for event in events:
                         if event['id'] in state.sent_events: continue
-                        
                         commence = datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00'))
-                        diff = (commence - datetime.now(timezone.utc)).total_seconds() / 3600
+                        diff_h = (commence - datetime.now(timezone.utc)).total_seconds() / 3600
                         
-                        if 0 < diff <= 6:
+                        if 0 < diff_h <= 6:
                             pred = get_dynamic_prediction(event, league_key)
                             if pred:
                                 state.sent_events.add(event['id'])
@@ -155,22 +142,22 @@ async def scanner():
                                     f"🧬 <b>ДИНАМИЧЕСКИЙ АНАЛИЗ V3</b>\n"
                                     f"⚽️ <b>{pred['home']} — {pred['away']}</b>\n"
                                     f"━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"⏰ <b>Начало:</b> {pred['time']} (МСК)\n"
                                     f"🎯 <b>Ставка:</b> <code>{pred['pick']}</code>\n"
                                     f"📈 <b>Коэффициент:</b> <code>{pred['odds']}</code>\n\n"
-                                    f"📊 <b>Вердикт:</b>\n{pred['style_note']}\n"
+                                    f"📊 <b>Вердикт:</b> {pred['note']}\n"
                                     f"━━━━━━━━━━━━━━━━━━━━"
                                 )
                                 await bot.send_message(CHANNEL_ID, text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
-                                await asyncio.sleep(3)
+                                await asyncio.sleep(2)
                 elif res.status_code in [401, 429]:
                     state.current_key_idx = (state.current_key_idx + 1) % len(API_KEYS)
             except: pass
-            await asyncio.sleep(5)
-            
+            await asyncio.sleep(2)
         state.total_scans += 1
         await asyncio.sleep(1200)
 
-# --- ИНТЕРФЕЙС И БАЛАНС ---
+# --- ИНТЕРФЕЙС ---
 @dp.callback_query(F.data.startswith("st_"))
 async def place_bet(c: types.CallbackQuery):
     _, amount, odds = c.data.split("_")
@@ -198,13 +185,23 @@ async def skip_match(c: types.CallbackQuery):
 @dp.message(Command("start"))
 async def cmd_start(m: types.Message):
     kb = ReplyKeyboardBuilder()
-    kb.button(text="📈 Статистика профита")
-    await m.answer("🤖 Baron V3: Динамический выбор стратегии активирован!", reply_markup=kb.as_markup(resize_keyboard=True))
+    kb.button(text="📈 ROI Статистика"); kb.button(text="🔑 API Статус")
+    await m.answer("🤖 Baron V3: Время и анализ активированы!", reply_markup=kb.as_markup(resize_keyboard=True))
 
-@dp.message(F.text == "📈 Статистика профита")
+@dp.message(F.text == "📈 ROI Статистика")
 async def show_stats(m: types.Message):
     stats = load_stats()
-    await m.answer(f"💰 <b>Ваш профит:</b> {round(stats.get('balance', 0), 2)}₽\nВсего прогнозов: {len(stats['results'])}", parse_mode=ParseMode.HTML)
+    balance = round(stats.get('balance', 0), 2)
+    await m.answer(f"💰 <b>Ваш профит:</b> {balance}₽\nПрогнозов: {len(stats['results'])}", parse_mode=ParseMode.HTML)
+
+@dp.message(F.text == "🔑 API Статус")
+async def show_keys(m: types.Message):
+    text = "🔑 <b>Статус API:</b>\n"
+    for i, k in enumerate(API_KEYS):
+        status = "🟢" if i == state.current_key_idx else "⚪️"
+        limit = state.key_limits.get(k, "???")
+        text += f"{status} Ключ №{i+1}: {limit} запр.\n"
+    await m.answer(text, parse_mode=ParseMode.HTML)
 
 async def main():
     if not os.path.exists(STATS_FILE):
