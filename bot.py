@@ -15,7 +15,7 @@ from deep_translator import GoogleTranslator
 
 # --- НАСТРОЙКИ ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("Baron_V3_Final_Time")
+logger = logging.getLogger("Baron_V3_Turbo")
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHAT_ID")
@@ -93,7 +93,6 @@ def get_dynamic_prediction(event, league_key):
 
             if final_odds < 1.30: final_odds = 1.35
 
-            # Время начала (МСК)
             commence_utc = datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00'))
             commence_msk = commence_utc + timedelta(hours=3)
             time_str = commence_msk.strftime("%H:%M")
@@ -116,44 +115,59 @@ async def scanner():
     
     while True:
         for league_key in leagues:
-            if state.current_key_idx >= len(API_KEYS): break
-            key = API_KEYS[state.current_key_idx]
-            url = f"https://api.the-odds-api.com/v4/sports/{league_key}/odds/"
-            try:
-                res = requests.get(url, params={'apiKey': key, 'regions': 'eu', 'markets': 'h2h'}, timeout=10)
-                if res.status_code == 200:
-                    state.key_limits[key] = res.headers.get('x-requests-remaining', '0')
-                    events = res.json()
-                    for event in events:
-                        if event['id'] in state.sent_events: continue
-                        commence = datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00'))
-                        diff_h = (commence - datetime.now(timezone.utc)).total_seconds() / 3600
-                        
-                        if 0 < diff_h <= 6:
-                            pred = get_dynamic_prediction(event, league_key)
-                            if pred:
-                                state.sent_events.add(event['id'])
-                                kb = InlineKeyboardBuilder()
-                                kb.button(text="💰 30₽", callback_data=f"st_30_{pred['odds']}")
-                                kb.button(text="💰 50₽", callback_data=f"st_50_{pred['odds']}")
-                                kb.button(text="⏭ Пропустить", callback_data="skip")
-                                
-                                text = (
-                                    f"🧬 <b>ДИНАМИЧЕСКИЙ АНАЛИЗ V3</b>\n"
-                                    f"⚽️ <b>{pred['home']} — {pred['away']}</b>\n"
-                                    f"━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"⏰ <b>Начало:</b> {pred['time']} (МСК)\n"
-                                    f"🎯 <b>Ставка:</b> <code>{pred['pick']}</code>\n"
-                                    f"📈 <b>Коэффициент:</b> <code>{pred['odds']}</code>\n\n"
-                                    f"📊 <b>Вердикт:</b> {pred['note']}\n"
-                                    f"━━━━━━━━━━━━━━━━━━━━"
-                                )
-                                await bot.send_message(CHANNEL_ID, text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
-                                await asyncio.sleep(2)
-                elif res.status_code in [401, 429]:
-                    state.current_key_idx = (state.current_key_idx + 1) % len(API_KEYS)
-            except: pass
-            await asyncio.sleep(2)
+            while state.current_key_idx < len(API_KEYS):
+                key = API_KEYS[state.current_key_idx]
+                url = f"https://api.the-odds-api.com/v4/sports/{league_key}/odds/"
+                try:
+                    res = requests.get(url, params={'apiKey': key, 'regions': 'eu', 'markets': 'h2h'}, timeout=10)
+                    
+                    if res.status_code == 200:
+                        state.key_limits[key] = res.headers.get('x-requests-remaining', '0')
+                        events = res.json()
+                        for event in events:
+                            if event['id'] in state.sent_events: continue
+                            commence = datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00'))
+                            diff_h = (commence - datetime.now(timezone.utc)).total_seconds() / 3600
+                            
+                            if 0 < diff_h <= 6:
+                                pred = get_dynamic_prediction(event, league_key)
+                                if pred:
+                                    state.sent_events.add(event['id'])
+                                    kb = InlineKeyboardBuilder()
+                                    kb.button(text="💰 30₽", callback_data=f"st_30_{pred['odds']}")
+                                    kb.button(text="💰 50₽", callback_data=f"st_50_{pred['odds']}")
+                                    kb.button(text="⏭ Пропустить", callback_data="skip")
+                                    
+                                    text = (
+                                        f"🧬 <b>ДИНАМИЧЕСКИЙ АНАЛИЗ V3</b>\n"
+                                        f"⚽️ <b>{pred['home']} — {pred['away']}</b>\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"⏰ <b>Начало:</b> {pred['time']} (МСК)\n"
+                                        f"🎯 <b>Ставка:</b> <code>{pred['pick']}</code>\n"
+                                        f"📈 <b>Коэффициент:</b> <code>{pred['odds']}</code>\n\n"
+                                        f"📊 <b>Вердикт:</b> {pred['note']}\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━"
+                                    )
+                                    await bot.send_message(CHANNEL_ID, text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+                                    await asyncio.sleep(2)
+                        break # Успешный запрос, выходим из цикла ключей для этой лиги
+                    
+                    elif res.status_code in [401, 429]:
+                        state.key_limits[key] = "0"
+                        state.current_key_idx += 1 # Моментальный переход к следующему ключу
+                        continue 
+                    else:
+                        state.current_key_idx += 1
+                        continue
+                except:
+                    state.current_key_idx += 1
+                    continue
+            
+            await asyncio.sleep(2) # Небольшая пауза между лигами для стабильности
+        
+        if state.current_key_idx >= len(API_KEYS):
+            state.current_key_idx = 0 # Сброс в начало списка только после прохода всех ключей
+
         state.total_scans += 1
         await asyncio.sleep(1200)
 
@@ -186,7 +200,7 @@ async def skip_match(c: types.CallbackQuery):
 async def cmd_start(m: types.Message):
     kb = ReplyKeyboardBuilder()
     kb.button(text="📈 ROI Статистика"); kb.button(text="🔑 API Статус")
-    await m.answer("🤖 Baron V3: Время и анализ активированы!", reply_markup=kb.as_markup(resize_keyboard=True))
+    await m.answer("🤖 Baron V3: Турбо-перебор ключей активирован!", reply_markup=kb.as_markup(resize_keyboard=True))
 
 @dp.message(F.text == "📈 ROI Статистика")
 async def show_stats(m: types.Message):
