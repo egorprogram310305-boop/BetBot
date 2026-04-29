@@ -130,7 +130,7 @@ async def scanner():
                             
                             commence = datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00'))
                             diff = (commence - datetime.now(timezone.utc)).total_seconds() / 3600
-                            if 0 < diff <= 6:
+                            if 0 < diff <= 12:
                                 pred = get_best_prediction(event, league_key)
                                 if pred:
                                     state.sent_events.add(pred['id'])
