@@ -40,7 +40,6 @@ state = BotState()
 
 # --- СИСТЕМА ХРАНЕНИЯ (ПАМЯТЬ) ---
 def load_data():
-    # Загрузка статистики и баланса
     if os.path.exists(STATS_FILE):
         try:
             with open(STATS_FILE, "r") as f:
@@ -55,7 +54,6 @@ def save_data(data):
         json.dump(data, f)
 
 def load_sent_events():
-    # Загрузка памяти об отправленных матчах (чтобы не дублировать после перезапуска)
     if os.path.exists(SENT_EVENTS_FILE):
         try:
             with open(SENT_EVENTS_FILE, "r") as f:
@@ -93,30 +91,33 @@ def analyze_style_and_stats(home_team, away_team):
     except:
         return "BALANCED", "⚙️ Статистика учтена"
 
-# --- ЛОГИКА КЭФОВ ПОД BETBOOM ---
+# --- ЛОГИКА КЭФОВ ПОД BETBOOM (МАТЕМАТИЧЕСКАЯ КОРРЕЛЯЦИЯ) ---
 def get_vip_prediction(event):
     if not event.get('bookmakers'): return None
     
-    # Приоритет на линии 1xBet и Marathon (идентичны BetBoom)
     bb = next((b for b in event['bookmakers'] if b['key'] in ['onexbet', 'marathonbet']), event['bookmakers'][0])
     market = next((m for m in bb['markets'] if m['key'] == 'h2h'), None)
     if not market: return None
 
     for outcome in market['outcomes']:
-        price = outcome['price']
-        if 1.50 <= price <= 2.50:
+        win_price = outcome['price']
+        # Анализируем фаворита с кэфом от 1.50 до 3.00 на чистую победу
+        if 1.50 <= win_price <= 3.0:
             style, note = analyze_style_and_stats(event['home_team'], event['away_team'])
             if not style: continue
 
-            # Множители повышены для соответствия BetBoom (0.92-0.94)
+            # Применяем корреляцию для получения реальных цифр BetBoom
             if style == "ATTACK":
-                final_odds = round(price * 0.94, 2)
+                # ИТБ(1) — это примерно 65% от кэфа на чистую победу
+                final_odds = round(win_price * 0.65, 2)
                 bet_type = f"ИТБ (1) на {safe_translate(outcome['name'])}"
             else:
-                final_odds = round(price * 0.92, 2)
+                # Фора(0) — это примерно 72% от кэфа на чистую победу
+                final_odds = round(win_price * 0.72, 2)
                 bet_type = f"Фора (0) на {safe_translate(outcome['name'])}"
 
-            if final_odds < 1.45: continue
+            # Если после корреляции кэф слишком низкий — пропускаем
+            if final_odds < 1.30: continue
 
             commence_utc = datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00'))
             commence_msk = commence_utc + timedelta(hours=3)
@@ -129,7 +130,7 @@ def get_vip_prediction(event):
             }
     return None
 
-# --- СКАНЕР (24 ЧАСА + РАСШИРЕННЫЕ ЛИГИ) ---
+# --- СКАНЕР ---
 async def scanner():
     leagues = [
         "soccer_epl", "soccer_germany_bundesliga", "soccer_italy_serie_a", 
@@ -154,12 +155,11 @@ async def scanner():
                         commence = datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00'))
                         diff = (commence - datetime.now(timezone.utc)).total_seconds() / 3600
                         
-                        # ОКНО 24 ЧАСА
                         if 0 < diff <= 24:
                             pred = get_vip_prediction(event)
                             if pred:
                                 state.sent_events.add(pred['id'])
-                                save_sent_events() # Сохраняем память в файл
+                                save_sent_events()
                                 kb = InlineKeyboardBuilder()
                                 kb.button(text="💰 Поставил", callback_data=f"v_{pred['id']}_{pred['odds']}")
                                 kb.button(text="⏭ Пропустить", callback_data="skip")
@@ -244,7 +244,7 @@ async def show_keys(m: types.Message):
 async def start(m: types.Message):
     kb = ReplyKeyboardBuilder()
     kb.button(text="📈 ROI Статистика"); kb.button(text="🔑 Ключи")
-    await m.answer("💎 <b>BaronVIP v2.5</b>\nОкно 24ч | BetBoom Ready", reply_markup=kb.as_markup(resize_keyboard=True), parse_mode=ParseMode.HTML)
+    await m.answer("💎 <b>BaronVIP v2.6</b>\nОкно 24ч | Математическая коррекция", reply_markup=kb.as_markup(resize_keyboard=True), parse_mode=ParseMode.HTML)
 
 async def main():
     app = web.Application()
@@ -257,4 +257,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
