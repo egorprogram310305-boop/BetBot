@@ -199,7 +199,7 @@ async def set_balance(m: types.Message, command: CommandObject):
 async def bet_init(c: types.CallbackQuery):
     _, eid, odds = c.data.split("_")
     kb = InlineKeyboardBuilder()
-    for val in [50, 100, 200]: kb.button(text=f"{val}₽", callback_data=f"f_{eid}_{odds}_{val}")
+    for val in [30, 40, 50, 60, 70]: kb.button(text=f"{val}₽", callback_data=f"f_{eid}_{odds}_{val}")
     await c.message.edit_reply_markup(reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data == "skip")
