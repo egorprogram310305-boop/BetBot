@@ -19,7 +19,7 @@ logger = logging.getLogger("BaronVIP_💎")
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHAT_ID")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0")) # Добавьте ваш ID в переменные окружения
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 API_KEYS = [k.strip() for k in os.getenv("ODDS_API_KEYS", "").split(",") if k.strip()]
 STATS_FILE = "stats.json"
 SENT_EVENTS_FILE = "sent_events.json"
@@ -35,9 +35,9 @@ class BotState:
     current_key_idx = 0
     key_limits = {}
     sent_events = set()
-    # Настройки Admin 2.7
+    # Параметры Admin 2.7
     min_odds = 1.50
-    skepticism = 0.90 # Уценка 10%
+    skepticism = 0.90
     depth_hours = 24
 
 state = BotState()
@@ -59,77 +59,53 @@ def save_data(data):
     with open(STATS_FILE, "w") as f:
         json.dump(data, f)
 
-state.sent_events = set() # Сброс для теста или загрузка из файла
-
-# --- УЛУЧШЕННАЯ СИНХРОНИЗАЦИЯ НАЗВАНИЙ ---
+# --- ФУНКЦИИ ---
 def sync_team_name(name):
     name = name.replace("U23", "").replace("U21", "").replace("U19", "")
     removals = ["FC", "CF", "SSC", "AS", "Utd", "United", "Real", "BSC", "AC"]
     words = name.split()
     clean_words = [w for w in words if w not in removals]
-    name = " ".join(clean_words).strip()
-    return name
+    return " ".join(clean_words).strip()
 
 def safe_translate(text):
     try: return GoogleTranslator(source='en', target='ru').translate(text)
     except: return text
 
-# --- УСИЛЕННЫЙ АНАЛИЗАТОР 2.7 ---
 def analyze_strict(home, away):
     try:
         headers = {'User-Agent': random.choice(USER_AGENTS)}
-        # Ищем серийность и защиту
         query = f"{home} last matches goals"
         res = requests.get(f"https://www.google.com/search?q={query}", headers=headers, timeout=7)
         content = res.text.lower()
-        
-        # Проверка защиты (бетон)
         if "clean sheet" in content or "strong defense" in content:
             return None, "🛡 Защита соперника слишком крепка"
-            
-        # Проверка серийности (минимум 4 из 5)
         goals_count = content.count("2-") + content.count("3-") + content.count("4-")
         if goals_count >= 4:
             return "OVER", "🔥 Серийность: Высокая результативность"
         return "FORA", "⚖️ Сбалансированный темп"
-    except:
-        return "FORA", "⚙️ Статистика учтена"
+    except: return "FORA", "⚙️ Статистика учтена"
 
-# --- SMART API ЛОГИКА ---
 def get_vip_prediction(event):
     if not event.get('bookmakers'): return None
-    
-    # Принцип Минимума: берем самый низкий кэф из доступных
     all_odds = []
     for bk in event['bookmakers']:
         m = next((m for m in bk['markets'] if m['key'] == 'h2h'), None)
-        if m: all_odds.append(m['outcomes'][0]['price']) # Кэф на фаворита
-    
+        if m: all_odds.append(m['outcomes'][0]['price'])
     if not all_odds: return None
     min_market_price = min(all_odds)
 
     if 1.50 <= min_market_price <= 3.0:
         style, note = analyze_strict(event['home_team'], event['away_team'])
         if not style: return None
-
-        # Коэффициент Скептицизма и выбор рынка
         if style == "OVER":
-            # ИТБ(1.5) вместо ИТБ(1)
             raw_odds = min_market_price * 0.85 
             bet_type = f"ИТБ (1.5) на {sync_team_name(safe_translate(event['home_team']))}"
         else:
-            # Фора(0)
             raw_odds = min_market_price * 0.72
             bet_type = f"Фора (0) на {sync_team_name(safe_translate(event['home_team']))}"
-
         final_odds = round(raw_odds * state.skepticism, 2)
-
-        # Порог доходности
         if final_odds < state.min_odds: return None
-
-        commence_utc = datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00'))
-        commence_msk = commence_utc + timedelta(hours=3)
-        
+        commence_msk = datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00')) + timedelta(hours=3)
         return {
             "id": event['id'], "pick": bet_type, "odds": final_odds,
             "home": event['home_team'], "away": event['away_team'],
@@ -150,11 +126,11 @@ async def scanner():
                 res = requests.get(f"https://api.the-odds-api.com/v4/sports/{league_key}/odds/", 
                                    params={'apiKey': key, 'regions': 'eu', 'markets': 'h2h'}, timeout=10)
                 if res.status_code == 200:
+                    state.key_limits[key] = res.headers.get('x-requests-remaining', '0')
                     data = res.json()
                     for event in data:
                         if event['id'] in state.sent_events: continue
                         diff = (datetime.fromisoformat(event['commence_time'].replace('Z', '+00:00')) - datetime.now(timezone.utc)).total_seconds() / 3600
-                        
                         if 0 < diff <= state.depth_hours:
                             pred = get_vip_prediction(event)
                             if pred:
@@ -162,10 +138,7 @@ async def scanner():
                                 kb = InlineKeyboardBuilder()
                                 kb.button(text="💰 Поставил", callback_data=f"v_{pred['id']}_{pred['odds']}")
                                 kb.button(text="⏭ Пропустить", callback_data="skip")
-                                
-                                home_s = sync_team_name(safe_translate(pred['home']))
-                                away_s = sync_team_name(safe_translate(pred['away']))
-                                
+                                home_s, away_s = sync_team_name(safe_translate(pred['home'])), sync_team_name(safe_translate(pred['away']))
                                 text = (
                                     f"💎 <b>BaronVIP v2.7</b>\n"
                                     f"⚽️ <code>{home_s}</code> — <code>{away_s}</code>\n"
@@ -183,7 +156,10 @@ async def scanner():
             await asyncio.sleep(2)
         await asyncio.sleep(600)
 
-# --- ОБРАБОТЧИКИ 2.7 ---
+# --- ОБРАБОТЧИКИ ---
+@dp.callback_query(F.data == "skip")
+async def bet_skip(c: types.CallbackQuery): await c.message.delete()
+
 @dp.callback_query(F.data.startswith("v_"))
 async def bet_init(c: types.CallbackQuery):
     _, eid, odds = c.data.split("_")
@@ -195,20 +171,10 @@ async def bet_init(c: types.CallbackQuery):
 async def bet_final(c: types.CallbackQuery):
     _, eid, odds, amnt = c.data.split("_")
     kb = InlineKeyboardBuilder()
-    kb.button(text="✅ ВИН", callback_data=f"win_input_{eid}_{amnt}")
+    kb.button(text="✅ ВИН", callback_data=f"win_in_{eid}_{amnt}")
     kb.button(text="🔄 ВОЗВРАТ", callback_data=f"res_r_{eid}_{amnt}")
     kb.button(text="❌ ЛОСС", callback_data=f"res_l_{eid}_{amnt}")
     await c.message.edit_text(c.message.text + f"\n\n<b>✅ ПРИНЯТО: {amnt}₽</b>", reply_markup=kb.as_markup(), parse_mode=ParseMode.HTML)
-
-# ВИН С ВВОДОМ КЭФА
-@dp.callback_query(F.data.startswith("win_input_"))
-async def win_odds_request(c: types.CallbackQuery):
-    _, _, eid, amnt = c.data.split("_")
-    await c.answer("Введите реальный кэф (число)", show_alert=True)
-    # Здесь упрощенно записываем в статус ожидания ввода кэфа
-    kb = InlineKeyboardBuilder()
-    kb.button(text="✍️ Ввести кэф вручную", callback_data=f"manual_{eid}_{amnt}")
-    await c.message.edit_reply_markup(reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data.startswith("res_"))
 async def settle_simple(c: types.CallbackQuery):
@@ -217,51 +183,70 @@ async def settle_simple(c: types.CallbackQuery):
     if res == "l":
         stats["loss"] += 1
         stats["balance"] -= float(amnt)
-    elif res == "r":
-        stats["refunds"] += 1
+    elif res == "r": stats["refunds"] += 1
     save_data(stats)
     await c.message.edit_text(c.message.text + f"\n\n<b>ИТОГ: {'❌ ЛОСС' if res=='l' else '🔄 ВОЗВРАТ'}</b>", parse_mode=ParseMode.HTML)
 
-# --- АДМИН ПАНЕЛЬ 2.7 ---
+# --- КНОПКА КЛЮЧИ ---
+@dp.message(F.text == "🔑 Ключи")
+async def show_keys(m: types.Message):
+    text = "🔑 <b>Статус API:</b>\n"
+    for i, k in enumerate(API_KEYS):
+        status = "🟢" if i == state.current_key_idx else "⚪️"
+        text += f"{status} К №{i+1}: {state.key_limits.get(k, '???')}\n"
+    await m.answer(text, parse_mode=ParseMode.HTML)
+
+# --- АДМИН ПАНЕЛЬ 2.7 (ИСПРАВЛЕНО) ---
 @dp.message(Command("admin"))
 async def admin_menu(m: types.Message):
     if m.from_user.id != ADMIN_ID: return
     kb = InlineKeyboardBuilder()
-    kb.button(text="⏳ Глубина", callback_data="set_depth")
-    kb.button(text="📉 Порог кэфа", callback_data="set_min")
-    kb.button(text="🔧 Скептицизм", callback_data="set_skep")
-    kb.button(text="🏠 Выход", callback_data="admin_exit")
-    await m.answer("⚙️ <b>Admin 2.7: Управление параметрами</b>", reply_markup=kb.as_markup(), parse_mode=ParseMode.HTML)
+    kb.row(types.InlineKeyboardButton(text="⏳ Глубина анализа", callback_data="set_depth"), 
+           types.InlineKeyboardButton(text="📉 Порог кэфа", callback_data="set_min"))
+    kb.row(types.InlineKeyboardButton(text="🔧 Скептицизм", callback_data="set_skep"), 
+           types.InlineKeyboardButton(text="⚙️ Настройки", callback_data="show_config"))
+    kb.row(types.InlineKeyboardButton(text="🏠 Выход", callback_data="admin_exit"))
+    await m.answer("⚙️ <b>Панель Admin 2.7</b>", reply_markup=kb.as_markup(), parse_mode=ParseMode.HTML)
+
+@dp.callback_query(F.data == "show_config")
+async def show_config(c: types.CallbackQuery):
+    text = (f"🛠 <b>Текущие настройки:</b>\n"
+            f"• Мин. коэффициент: <code>{state.min_odds}</code>\n"
+            f"• Скептицизм: <code>{state.skepticism}</code>\n"
+            f"• Глубина поиска: <code>{state.depth_hours} ч.</code>")
+    await c.message.answer(text, parse_mode=ParseMode.HTML)
+
+@dp.callback_query(F.data == "admin_exit")
+async def admin_exit(c: types.CallbackQuery):
+    await c.message.delete()
+    await c.message.answer("👋 Выход из админ-панели выполнен.")
 
 @dp.callback_query(F.data == "set_min")
 async def set_min_req(c: types.CallbackQuery):
-    await c.message.answer("Используйте команду: <code>/min 1.60</code>", parse_mode=ParseMode.HTML)
+    await c.message.answer("Используйте: <code>/min 1.60</code>", parse_mode=ParseMode.HTML)
 
 @dp.message(Command("min"))
 async def set_min_exec(m: types.Message, command: CommandObject):
     if m.from_user.id != ADMIN_ID: return
-    state.min_odds = float(command.args)
-    await m.answer(f"✅ Мин. кэф установлен: {state.min_odds}")
+    try:
+        state.min_odds = float(command.args)
+        await m.answer(f"✅ Мин. кэф: {state.min_odds}")
+    except: await m.answer("Ошибка формата!")
 
-# --- СТАТИСТИКА 2.7 ---
 @dp.message(F.text == "📈 ROI Статистика")
-async def show_stats(m: types.Message):
+async def show_stats_btn(m: types.Message):
     s = load_data()
     roi = ((s['balance'] - s['start_balance']) / s['start_balance']) * 100
-    text = (
-        f"📊 <b> BaronVIP v2.7 Отчет:</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 <b>Баланс:</b> {round(s['balance'], 2)}₽\n"
-        f"✅ <b>Вин:</b> {s['wins']} | ❌ <b>Лосс:</b> {s['loss']} | 🔄 <b>Возврат:</b> {s['refunds']}\n"
-        f"📈 <b>Прибыль:</b> {round(roi, 2)}%\n"
-        f"━━━━━━━━━━━━━━━━━━━━"
-    )
+    text = (f"📊 <b>BaronVIP v2.7 Отчет:</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+            f"💰 <b>Баланс:</b> {round(s['balance'], 2)}₽\n"
+            f"✅ <b>Вин:</b> {s['wins']} | ❌ <b>Лосс:</b> {s['loss']} | 🔄 <b>Возврат:</b> {s['refunds']}\n"
+            f"📈 <b>Прибыль:</b> {round(roi, 2)}%\n━━━━━━━━━━━━━━━━━━━━")
     await m.answer(text, parse_mode=ParseMode.HTML)
 
 @dp.message(Command("start"))
 async def start(m: types.Message):
     kb = ReplyKeyboardBuilder()
-    kb.button(text="📈 ROI Статистика"); kb.button(text="🔑 Ключи")
+    kb.row(types.KeyboardButton(text="📈 ROI Статистика"), types.KeyboardButton(text="🔑 Ключи"))
     await m.answer("🚀 <b>BaronVIP v2.7</b>\nВайб-кодинг | iPhone Friendly", reply_markup=kb.as_markup(resize_keyboard=True), parse_mode=ParseMode.HTML)
 
 async def main():
