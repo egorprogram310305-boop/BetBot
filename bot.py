@@ -2,7 +2,7 @@ import os
 import asyncio
 import logging
 import requests
-import psycopg2
+import psycopg2  # Библиотека остается той же в коде, меняется только в requirements.txt
 import random
 import json
 from datetime import datetime, timezone, timedelta
@@ -46,7 +46,6 @@ TARIFFS = {
     "level": {"name": "Уровень💹", "days": 60, "price": 1666}
 }
 
-# --- DICTIONARY (Бетбум Style) ---
 TEAM_TRANSLATIONS = {
     "Arsenal": "Арсенал", "Chelsea": "Челси", "Liverpool": "Ливерпуль", 
     "Manchester City": "Манчестер Сити", "Real Madrid": "Реал Мадрид",
@@ -58,7 +57,6 @@ TEAM_TRANSLATIONS = {
 
 # --- FUNCTIONS ---
 def sync_team_name(name):
-    # Убираем возрастные категории и технические приставки
     name = name.replace("U23", "").replace("U21", "").replace("U19", "").replace("FC ", "").replace(" CF", "")
     removals = ["SSC", "AS", "Utd", "United", "BSC", "AC", "City"]
     words = name.split()
@@ -66,10 +64,8 @@ def sync_team_name(name):
     return " ".join(clean_words).strip()
 
 def safe_translate(name):
-    # Сначала пробуем найти в словаре точное совпадение
     if name in TEAM_TRANSLATIONS:
         return TEAM_TRANSLATIONS[name]
-    # Потом пробуем найти после очистки
     clean = sync_team_name(name)
     return TEAM_TRANSLATIONS.get(clean, clean)
 
@@ -94,7 +90,6 @@ def has_active_sub(uid):
     except: pass
     return False
 
-# --- CORE UTILS ---
 async def send_to_office(topic_id, text, kb=None):
     try:
         await bot.send_message(ADMIN_GROUP_ID, text, message_thread_id=topic_id, 
@@ -125,9 +120,7 @@ async def scanner():
                         commence = datetime.fromisoformat(ev['commence_time'].replace('Z', '+00:00'))
                         diff = (commence - datetime.now(timezone.utc)).total_seconds() / 3600
                         
-                        # Окно анализа: от 1.5 до 24 часов до матча
                         if 1.5 < diff < 24:
-                            # Берем кэф первого букмекера и накладываем скептицизм
                             raw_price = ev['bookmakers'][0]['markets'][0]['outcomes'][0]['price']
                             final_odds = round(raw_price * 0.96, 2)
                             
@@ -145,7 +138,7 @@ async def scanner():
 
                 elif res.status_code == 429:
                     current_key_idx = (current_key_idx + 1) % len(API_KEYS)
-                    break # Переходим к следующему ключу
+                    break 
 
             except Exception as e:
                 logging.error(f"Scanner error: {e}")
