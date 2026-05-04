@@ -7,9 +7,9 @@ import random
 import re
 from datetime import datetime, timezone, timedelta
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.enums import ParseMode
+from aiogram.enums import ParseMode, ChatAction
 from aiogram.filters import Command, CommandObject, StateFilter
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -18,17 +18,16 @@ from deep_translator import GoogleTranslator
 
 # --- CONFIG & SYSTEM ---
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("Baron_v7_2")
+logger = logging.getLogger("Baron_v7_2_FULL")
 
 TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = os.getenv("CHAT_ID") # Основной канал
+CHANNEL_ID = os.getenv("CHAT_ID")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID", "0"))
 API_KEYS = [k.strip() for k in os.getenv("ODDS_API_KEYS", "").split(",") if k.strip()]
 REQUISITES = os.getenv("PAYMENT_REQUISITES", "Реквизиты не установлены")
 DB_URL = os.getenv("DATABASE_URL", "").replace("postgres://", "postgresql://", 1)
 
-# Topics (Топики в админ-группе)
 T_MGMT = int(os.getenv("TOPIC_ID_MANAGEMENT", "0"))
 T_LOGS = int(os.getenv("TOPIC_ID_LOGS", "0")) 
 T_CASH = int(os.getenv("TOPIC_ID_PAYMENTS", "0"))
@@ -67,7 +66,7 @@ class BetStates(StatesGroup):
 def init_db():
     try:
         conn = psycopg2.connect(DB_URL); curr = conn.cursor()
-        curr.execute("CREATE TABLE IF NOT EXISTS users (uid BIGINT PRIMARY KEY, username TEXT, sub_end TIMESTAMP, trial_used INTEGER)")
+        curr.execute("CREATE TABLE IF NOT EXISTS users (uid BIGINT PRIMARY KEY, username TEXT, sub_end TIMESTAMP, trial_used INTEGER DEFAULT 0)")
         curr.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
         curr.execute("INSERT INTO settings (key, value) VALUES ('min_odds', '1.50'), ('max_odds', '2.50'), ('multiplier', '0.90'), ('time_depth', '24') ON CONFLICT DO NOTHING")
         conn.commit(); curr.close(); conn.close()
@@ -91,14 +90,16 @@ def set_setting(key, value):
 def check_and_add_user(uid, username):
     try:
         conn = psycopg2.connect(DB_URL); curr = conn.cursor()
-        curr.execute("SELECT uid FROM users WHERE uid = %s", (uid,))
-        if not curr.fetchone():
-            curr.execute("INSERT INTO users (uid, username, sub_end) VALUES (%s, %s, %s)", (uid, username, datetime.now(timezone.utc)))
-            conn.commit()
-            return True # Новый пользователь
+        curr.execute("SELECT trial_used FROM users WHERE uid = %s", (uid,))
+        res = curr.fetchone()
+        if not res:
+            end_trial = datetime.now(timezone.utc) + timedelta(days=3)
+            curr.execute("INSERT INTO users (uid, username, sub_end, trial_used) VALUES (%s, %s, %s, 1)", (uid, username, end_trial))
+            conn.commit(); curr.close(); conn.close()
+            return True, True # is_new, trial_given
         curr.close(); conn.close()
-    except: pass
-    return False
+        return False, False
+    except: return False, False
 
 def get_sub_status(uid):
     if uid == ADMIN_ID: return True
@@ -126,8 +127,6 @@ async def analyze_strict(team_name, is_home):
         content = res.text.lower()
         
         if "captcha" in content: return "CAPTCHA", 0
-        
-        # Скептицизм: ищем признаки сухой игры
         if "clean sheet" in content or "strong defense" in content or "0-0" in content:
             return "CANCEL", 0
             
@@ -136,48 +135,57 @@ async def analyze_strict(team_name, is_home):
         return itb_count, 0
     except: return -1, 0
 
+# --- UI HELPER ---
+def main_menu_kb():
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="📊 Аналитика")
+    builder.button(text="👤 Профиль")
+    builder.button(text="💳 Подписка")
+    return builder.adjust(2).as_markup(resize_keyboard=True)
+
 # --- BOT INTERFACE ---
 @dp.message(Command("start"))
 async def cmd_start(m: types.Message):
-    is_new = check_and_add_user(m.from_user.id, m.from_user.username)
+    await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
+    is_new, trial_given = check_and_add_user(m.from_user.id, m.from_user.username)
+    
     if is_new and T_USERS != 0:
         await bot.send_message(ADMIN_GROUP_ID, f"🆕 <b>Новый пользователь!</b>\n👤 @{m.from_user.username} (<code>{m.from_user.id}</code>)", message_thread_id=T_USERS, parse_mode=ParseMode.HTML)
     
-    active = get_sub_status(m.from_user.id)
-    status = "✅ <b>Активна</b>" if active else "❌ <b>Отсутствует</b>"
-    
-    text = (
+    welcome_text = (
         "🎩 <b>Добро пожаловать в Baron’s Verdict!</b>\n\n"
-        "Мы анализируем сотни матчей с помощью алгоритмов, отбирая только самые надежные исходы на индивидуальные тоталы и форы.\n\n"
-        f"Ваша подписка: {status}\n\n"
-        "<i>Выберите действие в меню ниже:</i>"
+        "Мы анализируем сотни матчей с помощью алгоритмов, отбирая только самые надежные исходы на индивидуальные тоталы.\n\n"
+        "<i>Воспользуйтесь меню ниже для управления аккаунтом.</i>"
     )
-    kb = InlineKeyboardBuilder()
-    kb.button(text="👤 Профиль", callback_data="profile")
-    kb.button(text="💳 Купить подписку", callback_data="show_tariffs")
-    await m.answer(text, reply_markup=kb.adjust(1).as_markup(), parse_mode=ParseMode.HTML)
+    if trial_given:
+        welcome_text += "\n\n🎁 Вам автоматически начислен <b>пробный доступ на 3 дня!</b> Вы уже можете получать прогнозы."
 
-@dp.callback_query(F.data == "profile")
-async def profile(c: types.CallbackQuery):
+    await m.answer(welcome_text, reply_markup=main_menu_kb(), parse_mode=ParseMode.HTML)
+
+@dp.message(F.text == "👤 Профиль")
+async def btn_profile(m: types.Message):
+    await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     try:
         conn = psycopg2.connect(DB_URL); curr = conn.cursor()
-        curr.execute("SELECT sub_end FROM users WHERE uid = %s", (c.from_user.id,))
+        curr.execute("SELECT sub_end FROM users WHERE uid = %s", (m.from_user.id,))
         res = curr.fetchone(); curr.close(); conn.close()
-        date_str = res[0].strftime('%d.%m.%Y %H:%M') if res and get_sub_status(c.from_user.id) else "Нет доступа"
-        await c.message.edit_text(f"👤 <b>Ваш профиль</b>\nID: <code>{c.from_user.id}</code>\nПодписка до: <b>{date_str}</b>", 
-                                  reply_markup=InlineKeyboardBuilder().button(text="◀️ Назад", callback_data="go_back").as_markup(), parse_mode=ParseMode.HTML)
-    except: await c.answer("Ошибка БД")
+        date_str = res[0].strftime('%d.%m.%Y %H:%M') if res and get_sub_status(m.from_user.id) else "Нет доступа или истекла"
+        await m.answer(f"👤 <b>Ваш профиль</b>\nID: <code>{m.from_user.id}</code>\nПодписка до: <b>{date_str}</b>", parse_mode=ParseMode.HTML)
+    except: await m.answer("Ошибка БД")
 
-@dp.callback_query(F.data == "go_back")
-async def go_back(c: types.CallbackQuery):
-    await cmd_start(c.message)
-
-@dp.callback_query(F.data == "show_tariffs")
-async def show_tariffs(c: types.CallbackQuery):
+@dp.message(F.text == "💳 Подписка")
+async def btn_sub(m: types.Message):
     kb = InlineKeyboardBuilder()
     for tid, d in TARIFFS.items(): kb.button(text=f"{d['name']} - {d['price']}₽", callback_data=f"buy_{tid}")
-    kb.button(text="◀️ Назад", callback_data="go_back")
-    await c.message.edit_text("📊 <b>Выберите тарифный план:</b>\n<i>Инвестируйте в качественную аналитику.</i>", reply_markup=kb.adjust(1).as_markup(), parse_mode=ParseMode.HTML)
+    await m.answer("📊 <b>Выберите тарифный план:</b>\n<i>Инвестируйте в качественную аналитику.</i>", reply_markup=kb.adjust(1).as_markup(), parse_mode=ParseMode.HTML)
+
+@dp.message(F.text == "📊 Аналитика")
+async def btn_analytics(m: types.Message):
+    if get_sub_status(m.from_user.id):
+        kb_user = InlineKeyboardBuilder().button(text="🚀 Перейти к прогнозам", url=f"https://t.me/{ (await bot.get_chat(CHANNEL_ID)).invite_link or 'c/'+CHANNEL_ID.replace('-100','') }")
+        await m.answer("Ваша подписка активна! Вы можете перейти в закрытый канал с прогнозами.", reply_markup=kb_user.as_markup())
+    else:
+        await m.answer("У вас нет активной подписки. Перейдите в раздел 💳 Подписка.")
 
 @dp.callback_query(F.data.startswith("buy_"))
 async def buy(c: types.CallbackQuery):
@@ -186,9 +194,9 @@ async def buy(c: types.CallbackQuery):
     text = (f"💳 <b>Оплата тарифа {TARIFFS[tid]['name']}</b>\n\n"
             f"Переведите <b>{TARIFFS[tid]['price']}₽</b> по реквизитам:\n"
             f"💳 Карта: <code>{REQUISITES}</code>\n\n"
-            f"⚠️ Важно: В комментарии к платежу (если возможно) или просто для сверки запомните код: <code>#{pid}</code>\n\n"
+            f"⚠️ Важно: В комментарии к платежу укажите код: <code>#{pid}</code>\n\n"
             f"<i>После перевода нажмите кнопку ниже.</i>")
-    kb = InlineKeyboardBuilder().button(text="✅ Я оплатил", callback_data=f"done_{tid}_{pid}").button(text="◀️ Отмена", callback_data="show_tariffs")
+    kb = InlineKeyboardBuilder().button(text="✅ Я оплатил", callback_data=f"done_{tid}_{pid}")
     await c.message.edit_text(text, reply_markup=kb.adjust(1).as_markup(), parse_mode=ParseMode.HTML)
 
 @dp.callback_query(F.data.startswith("done_"))
@@ -199,30 +207,34 @@ async def done(c: types.CallbackQuery):
     kb.button(text="❌ Отклонить", callback_data=f"adm_no_{c.from_user.id}")
     await bot.send_message(ADMIN_GROUP_ID, f"💰 <b>Заявка на оплату!</b>\nОт: @{c.from_user.username}\nID: <code>{c.from_user.id}</code>\nТариф: {TARIFFS[tid]['name']}\nСумма: {TARIFFS[tid]['price']}₽\nКод: #{pid}", 
                            reply_markup=kb.adjust(2).as_markup(), message_thread_id=T_CASH, parse_mode=ParseMode.HTML)
-    await c.message.edit_text("⏳ <b>Заявка отправлена!</b>\nОжидайте проверки администратором. Уведомление придет сюда.", parse_mode=ParseMode.HTML)
+    await c.message.edit_text("⏳ <b>Заявка отправлена!</b>\nОжидайте проверки администратором.", parse_mode=ParseMode.HTML)
 
 @dp.callback_query(F.data.startswith("adm_ok_"))
 async def adm_ok(c: types.CallbackQuery):
     _, _, tid, uid = c.data.split("_")
     end = datetime.now(timezone.utc) + timedelta(days=TARIFFS[tid]['days'])
     conn = psycopg2.connect(DB_URL); curr = conn.cursor()
-    curr.execute("UPDATE users SET sub_end = %s WHERE uid = %s", (end, uid)); conn.commit(); curr.close(); conn.close()
-    try: await bot.send_message(uid, "🎉 <b>Оплата успешно подтверждена!</b> Доступ открыт.", parse_mode=ParseMode.HTML)
+    curr.execute("UPDATE users SET sub_end = %s WHERE uid = %s", (end, int(uid))); conn.commit(); curr.close(); conn.close()
+    
+    try:
+        kb_user = InlineKeyboardBuilder().button(text="🚀 Начать анализировать матчи", url=f"https://t.me/{ (await bot.get_chat(CHANNEL_ID)).invite_link or 'c/'+CHANNEL_ID.replace('-100','') }")
+        await bot.send_message(int(uid), "🎉 <b>Оплата успешно подтверждена!</b> Доступ открыт.", reply_markup=kb_user.as_markup(), parse_mode=ParseMode.HTML)
     except: pass
     await c.message.edit_text(f"{c.message.text}\n\n✅ <b>ОДОБРЕНО</b>")
 
 @dp.callback_query(F.data.startswith("adm_no_"))
 async def adm_no(c: types.CallbackQuery):
     uid = c.data.split("_")[2]
-    try: await bot.send_message(uid, "❌ <b>Оплата не найдена.</b> Заявка отклонена. Если это ошибка, обратитесь к администратору.", parse_mode=ParseMode.HTML)
+    try: await bot.send_message(int(uid), "❌ <b>Оплата не найдена.</b> Заявка отклонена. Если это ошибка, обратитесь к администратору.", parse_mode=ParseMode.HTML)
     except: pass
     await c.message.edit_text(f"{c.message.text}\n\n❌ <b>ОТКЛОНЕНО</b>")
-
 
 # --- ADMIN PANEL ---
 @dp.message(Command("admin"))
 async def admin_panel(m: types.Message):
     if m.from_user.id != ADMIN_ID and m.chat.id != ADMIN_GROUP_ID: return
+    await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
+    
     mo = get_setting("min_odds", 1.5)
     ml = get_setting("multiplier", 0.9)
     td = get_setting("time_depth", 24)
@@ -250,6 +262,7 @@ async def set_adm_params(c: types.CallbackQuery, state: FSMContext):
 
 @dp.message(StateFilter(AdminStates.wait_min_odds, AdminStates.wait_mult, AdminStates.wait_time))
 async def save_adm_params(m: types.Message, state: FSMContext):
+    await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     cur_state = await state.get_state()
     try:
         val = float(m.text)
@@ -257,7 +270,7 @@ async def save_adm_params(m: types.Message, state: FSMContext):
         elif cur_state == AdminStates.wait_mult.state: set_setting("multiplier", val)
         elif cur_state == AdminStates.wait_time.state: set_setting("time_depth", val)
         await m.answer("✅ Настройка сохранена!", message_thread_id=T_MGMT)
-    except: await m.answer("❌ Ошибка. Введите число.")
+    except: await m.answer("❌ Ошибка. Введите число.", message_thread_id=T_MGMT)
     await state.clear()
 
 @dp.message(Command("give_sub"))
@@ -270,7 +283,7 @@ async def give_sub_cmd(m: types.Message, command: CommandObject):
         curr.execute("UPDATE users SET sub_end = %s WHERE uid = %s", (end, uid)); conn.commit(); curr.close(); conn.close()
         await m.answer(f"✅ Доступ выдан ID {uid} на {days} дней.", message_thread_id=T_MGMT)
         await bot.send_message(uid, f"🎁 Администратор выдал вам доступ на {days} дней!")
-    except Exception as e: await m.answer("Формат: /give_sub ID ДНИ")
+    except Exception as e: await m.answer("Формат: /give_sub ID ДНИ", message_thread_id=T_MGMT)
 
 @dp.callback_query(F.data == "start_broadcast")
 async def start_broad(c: types.CallbackQuery, state: FSMContext):
@@ -317,7 +330,6 @@ async def wait_real_odds(m: types.Message, state: FSMContext):
     amt = data.get("amount")
     odds = m.text
     
-    # Удаляем мусорные сообщения ввода
     for msg_id in [data.get("prompt1"), data.get("prompt2"), data.get("prompt3"), m.message_id]:
         try: await bot.delete_message(m.chat.id, msg_id)
         except: pass
@@ -343,7 +355,7 @@ async def bet_result(c: types.CallbackQuery):
     final_kb = InlineKeyboardBuilder().button(text=f"{res_text} ({profit_str})", callback_data="noop")
     await c.message.edit_reply_markup(reply_markup=final_kb.as_markup())
 
-# --- SCANNER ---
+# --- FULL SCANNER ---
 async def scanner():
     sent = set()
     idx = 0
@@ -388,16 +400,14 @@ async def scanner():
                                 sent.add(ev['id'])
                                 h, a = clean_and_translate(ev['home_team']), clean_and_translate(ev['away_team'])
                                 
-                                # Отправка в VIP
                                 msg_vip = (f"💎 <b>Baron’s Verdict</b>\n⚽️ <code>{h}</code> — <code>{a}</code>\n"
                                            f"━━━━━━━━━━━━━━━━━━━━\n"
                                            f"📊 Анализ: Высокая результативность дома ({itb_home}/5)\n"
-                                           f"🔥 Ставка: <b>ИТБ 1 (1.5)</b> или <b>Фора 1 (0)</b>\n"
+                                           f"🔥 Ставка: <b>ИТБ 1 (1.5)</b>\n"
                                            f"📈 Расч. кэф: <code>{final_odds}</code>\n"
                                            f"━━━━━━━━━━━━━━━━━━━━")
                                 await bot.send_message(CHANNEL_ID, msg_vip, parse_mode=ParseMode.HTML)
                                 
-                                # Отправка Админу в Прогнозы
                                 kb = InlineKeyboardBuilder()
                                 kb.button(text="💰 Поставил", callback_data="pred_place")
                                 kb.button(text="⏩ Пропустил", callback_data="pred_skip")
@@ -412,7 +422,7 @@ async def scanner():
             
         await asyncio.sleep(1800)
 
-# --- WEB SERVER ---
+# --- WEB SERVER (For Render Keep-Alive) ---
 async def main():
     init_db()
     app = web.Application()
