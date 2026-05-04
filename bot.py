@@ -230,6 +230,7 @@ async def adm_no(c: types.CallbackQuery):
     await c.message.edit_text(f"{c.message.text}\n\n❌ <b>ОТКЛОНЕНО</b>")
 
 # --- ADMIN PANEL ---
+# --- ADMIN PANEL ---
 @dp.message(Command("admin"))
 async def admin_panel(m: types.Message):
     if m.from_user.id != ADMIN_ID and m.chat.id != ADMIN_GROUP_ID: return
@@ -246,16 +247,20 @@ async def admin_panel(m: types.Message):
             f"Анализ (часы): <b>{td}ч</b>")
     
     kb = InlineKeyboardBuilder()
-    kb.button(text="⚙️ Изменить Мин. Кэф", callback_data="set_adm_min_odds")
-    kb.button(text="📉 Изменить Множитель", callback_data="set_adm_mult")
-    kb.button(text="⏳ Глубина анализа", callback_data="set_adm_time")
+    kb.button(text="⚙️ Мин. Кэф", callback_data="set_adm_min_odds")
+    kb.button(text="📉 Множитель", callback_data="set_adm_mult")
+    kb.button(text="⏳ Глубина", callback_data="set_adm_time")
     kb.button(text="📢 Рассылка", callback_data="start_broadcast")
-    await m.answer(text, reply_markup=kb.adjust(1).as_markup(), parse_mode=ParseMode.HTML, message_thread_id=T_MGMT)
+    await m.answer(text, reply_markup=kb.adjust(2).as_markup(), parse_mode=ParseMode.HTML, message_thread_id=T_MGMT)
 
 @dp.callback_query(F.data.startswith("set_adm_"))
 async def set_adm_params(c: types.CallbackQuery, state: FSMContext):
     action = c.data.replace("set_adm_", "")
-    await c.message.answer(f"Отправьте новое значение для {action}:", message_thread_id=T_MGMT)
+    prompts = {"min_odds": "минимальный кэф", "mult": "множитель", "time": "глубину анализа (в часах)"}
+    
+    await c.message.answer(f"🔢 Введите новое значение для: <b>{prompts.get(action, 'параметра')}</b>", 
+                           message_thread_id=T_MGMT, parse_mode=ParseMode.HTML)
+    
     if action == "min_odds": await state.set_state(AdminStates.wait_min_odds)
     elif action == "mult": await state.set_state(AdminStates.wait_mult)
     elif action == "time": await state.set_state(AdminStates.wait_time)
@@ -265,13 +270,15 @@ async def save_adm_params(m: types.Message, state: FSMContext):
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     cur_state = await state.get_state()
     try:
-        val = float(m.text)
-        if cur_state == AdminStates.wait_min_odds.state: set_setting("min_odds", val)
-        elif cur_state == AdminStates.wait_mult.state: set_setting("multiplier", val)
-        elif cur_state == AdminStates.wait_time.state: set_setting("time_depth", val)
-        await m.answer("✅ Настройка сохранена!", message_thread_id=T_MGMT)
-    except: await m.answer("❌ Ошибка. Введите число.", message_thread_id=T_MGMT)
+        val = float(m.text.replace(",", ".")) # Заменяем запятую на точку на всякий случай
+        if "min_odds" in str(cur_state): set_setting("min_odds", val)
+        elif "mult" in str(cur_state): set_setting("multiplier", val)
+        elif "time" in str(cur_state): set_setting("time_depth", val)
+        await m.answer(f"✅ Настройка <b>{val}</b> успешно сохранена!", message_thread_id=T_MGMT, parse_mode=ParseMode.HTML)
+    except:
+        await m.answer("❌ Ошибка! Введите число (например: 1.5 или 0.9)", message_thread_id=T_MGMT)
     await state.clear()
+
 
 @dp.message(Command("give_sub"))
 async def give_sub_cmd(m: types.Message, command: CommandObject):
