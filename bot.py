@@ -119,9 +119,7 @@ async def check_api_limits():
     results = []
     for i, key in enumerate(API_KEYS):
         try:
-            # Делаем пустой запрос к списку спортов, чтобы получить заголовки
             r = requests.get(f"https://api.the-odds-api.com/v4/sports/?apiKey={key}", timeout=10)
-            # Извлекаем данные из заголовков ответа
             remaining = r.headers.get('x-requests-remaining', '0')
             quota = r.headers.get('x-requests-used', '0')
             results.append(f"Ключ №{i+1}: Осталось <b>{remaining}</b> (Использовано: {quota})")
@@ -202,14 +200,9 @@ async def btn_sub(m: types.Message):
 @dp.message(F.text == "🎯 Поиск Прогнозов")
 async def btn_analytics(m: types.Message):
     if get_sub_status(m.from_user.id):
-        # Теперь здесь нет ссылки, а есть callback_data
         kb_user = InlineKeyboardBuilder()
         kb_user.button(text="🎯 Поиск Прогнозов", callback_data="start_scanning_msg")
-        
-        await m.answer(
-            "✅ Ваша подписка активна! Начинайте поиск прогнозов🔎", 
-            reply_markup=kb_user.as_markup()
-        )
+        await m.answer("✅ Ваша подписка активна! Начинайте поиск прогнозов🔎", reply_markup=kb_user.as_markup())
     else:
         await m.answer("У вас нет активной подписки. Перейдите в раздел 💳 Подписка.")
 
@@ -241,21 +234,12 @@ async def adm_ok(c: types.CallbackQuery):
     end = datetime.now(timezone.utc) + timedelta(days=TARIFFS[tid]['days'])
     conn = psycopg2.connect(DB_URL); curr = conn.cursor()
     curr.execute("UPDATE users SET sub_end = %s WHERE uid = %s", (end, int(uid))); conn.commit(); curr.close(); conn.close()
-    
     try:
-    # Теперь тут callback_data вместо url
         kb_user = InlineKeyboardBuilder()
         kb_user.button(text="🎯 Поиск прогнозов", callback_data="start_scanning_msg")
-        
-        await bot.send_message(
-            int(uid), 
-            "🎉 <b>Оплата успешно подтверждена!</b> Доступ открыт.", 
-            reply_markup=kb_user.as_markup(), 
-            parse_mode=ParseMode.HTML
-            )
+        await bot.send_message(int(uid), "🎉 <b>Оплата успешно подтверждена!</b> Доступ открыт.", reply_markup=kb_user.as_markup(), parse_mode=ParseMode.HTML)
     except Exception as e:
         logger.error(f"Ошибка уведомления: {e}")
-
     await c.message.edit_text(f"{c.message.text}\n\n✅ <b>ОДОБРЕНО</b>")
 
 @dp.callback_query(F.data.startswith("adm_no_"))
@@ -267,59 +251,39 @@ async def adm_no(c: types.CallbackQuery):
     
 @dp.callback_query(F.data == "start_scanning_msg")
 async def process_start_scanning_press(c: types.CallbackQuery):
-    await c.message.answer(
-        "🔎 Сканирование матчей началось… Как появится идеальный прогноз, вам придет уведомление 📣"
-    )
-    # Это убирает состояние загрузки на кнопке
+    await c.message.answer("🔎 Сканирование матчей началось… Как появится идеальный прогноз, вам придет уведомление 📣")
     await c.answer()
-
 
 # --- ADMIN PANEL ---
 
-@dp.message(Command("admin"))
 @dp.message(Command("limits"))
 async def cmd_limits(m: types.Message):
-    # Проверка, что команду вызывает админ
-    if m.from_user.id != ADMIN_ID:
-        return
-    
+    if m.from_user.id != ADMIN_ID: return
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     report = await check_api_limits()
-    
-    text = (f"📊 <b>Статус API квот:</b>\n\n{report}\n\n"
-            f"<i>Обновление лимитов происходит раз в месяц.</i>")
-    
+    text = (f"📊 <b>Статус API квот:</b>\n\n{report}\n\n<i>Обновление лимитов происходит раз в месяц.</i>")
     await m.answer(text, parse_mode=ParseMode.HTML, message_thread_id=T_MGMT)
 
+@dp.message(Command("admin"))
 async def admin_panel(m: types.Message):
     if m.from_user.id != ADMIN_ID: return
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
-    
     mo = get_setting("min_odds", 1.5)
     ml = get_setting("multiplier", 0.9)
     td = get_setting("time_depth", 24)
-    
-    text = (f"🛠 <b>Панель управления</b>\n\n"
-            f"Ключей API: <b>{len(API_KEYS)}</b>\n"
-            f"Мин. Кэф: <b>{mo}</b>\n"
-            f"Множитель: <b>{ml}</b>\n"
-            f"Анализ (часы): <b>{td}ч</b>")
-    
+    text = (f"🛠 <b>Панель управления</b>\n\nКлючей API: <b>{len(API_KEYS)}</b>\nМин. Кэф: <b>{mo}</b>\nМножитель: <b>{ml}</b>\nАнализ (часы): <b>{td}ч</b>")
     kb = InlineKeyboardBuilder()
     kb.button(text="⚙️ Мин. Кэф", callback_data="set_adm_min_odds")
     kb.button(text="📉 Множитель", callback_data="set_adm_mult")
     kb.button(text="⏳ Глубина", callback_data="set_adm_time")
     kb.button(text="📢 Рассылка", callback_data="start_broadcast")
-    
     await bot.send_message(m.chat.id, text, reply_markup=kb.adjust(2).as_markup(), parse_mode=ParseMode.HTML, message_thread_id=T_MGMT)
 
 @dp.callback_query(F.data.startswith("set_adm_"))
 async def set_adm_params(c: types.CallbackQuery, state: FSMContext):
     action = c.data.replace("set_adm_", "")
     prompts = {"min_odds": "минимальный кэф", "mult": "множитель", "time": "глубину анализа (в часах)"}
-    
     await bot.send_message(c.message.chat.id, f"🔢 Введите новое значение для: <b>{prompts.get(action, 'параметра')}</b>", message_thread_id=T_MGMT, parse_mode=ParseMode.HTML)
-    
     if action == "min_odds": await state.set_state(AdminStates.wait_min_odds)
     elif action == "mult": await state.set_state(AdminStates.wait_mult)
     elif action == "time": await state.set_state(AdminStates.wait_time)
@@ -334,7 +298,6 @@ async def save_adm_params(m: types.Message, state: FSMContext):
         if "wait_min_odds" in str(cur_state): set_setting("min_odds", val)
         elif "wait_mult" in str(cur_state): set_setting("multiplier", val)
         elif "wait_time" in str(cur_state): set_setting("time_depth", val)
-        
         await bot.send_message(m.chat.id, f"✅ Настройка <b>{val}</b> успешно сохранена!", message_thread_id=T_MGMT, parse_mode=ParseMode.HTML)
     except ValueError:
         await bot.send_message(m.chat.id, "❌ Ошибка! Введите число (например: 1.5 или 0.9)", message_thread_id=T_MGMT)
@@ -346,10 +309,12 @@ async def cmd_ping_toggle(m: types.Message, command: CommandObject):
     arg = command.args
     if arg == "999":
         set_setting("ping_mode", "1")
-        await m.answer("🛰 **Режим детального отчета ВКЛЮЧЕН.**", message_thread_id=T_MGMT, parse_mode=ParseMode.HTML)
+        await m.answer("🛰 <b>PING ON:</b> Детальные отчеты включены.", message_thread_id=T_MGMT, parse_mode=ParseMode.HTML)
     elif arg == "1":
         set_setting("ping_mode", "0")
-        await m.answer("💤 **Режим детального отчета ВЫКЛЮЧЕН.**", message_thread_id=T_MGMT, parse_mode=ParseMode.HTML)
+        await m.answer("💤 <b>PING OFF:</b> Детальные отчеты выключены.", message_thread_id=T_MGMT, parse_mode=ParseMode.HTML)
+    else:
+        await m.answer("⚠️ Используйте: <code>/ping 999</code> или <code>/ping 1</code>", message_thread_id=T_MGMT, parse_mode=ParseMode.HTML)
 
 @dp.message(Command("give_sub"))
 async def give_sub_cmd(m: types.Message, command: CommandObject):
@@ -384,22 +349,6 @@ async def process_broad(m: types.Message, state: FSMContext):
         except: continue
     await bot.send_message(m.chat.id, f"📢 Рассылка завершена. Доставлено: {count}", message_thread_id=T_MGMT)
     await state.clear()
-@dp.message(Command("ping"))
-async def cmd_ping_toggle(m: types.Message, command: CommandObject):
-    # Проверяем, что пишет именно админ
-    if m.from_user.id != ADMIN_ID: 
-        return
-        
-    arg = command.args # Получаем то, что написано после /ping
-    
-    if arg == "999":
-        set_setting("ping_mode", "1")
-        await m.answer("🛰 <b>PING ON:</b> Детальные отчеты включены в Логи.", message_thread_id=T_MGMT, parse_mode=ParseMode.HTML)
-    elif arg == "1":
-        set_setting("ping_mode", "0")
-        await m.answer("💤 <b>PING OFF:</b> Детальные отчеты выключены.", message_thread_id=T_MGMT, parse_mode=ParseMode.HTML)
-    else:
-        await m.answer("⚠️ Используйте: <code>/ping 999</code> (ВКЛ) или <code>/ping 1</code> (ВЫКЛ)", message_thread_id=T_MGMT, parse_mode=ParseMode.HTML)
 
 # --- PREDICTIONS INTERACTION ---
 @dp.callback_query(F.data == "pred_skip")
@@ -453,110 +402,59 @@ async def scanner():
     sent = set()
     idx = 0
     while True:
-        # Проверка наличия ключей
         if not API_KEYS: 
-            logger.error("API_KEYS is empty! Check environment variables.")
+            logger.error("API_KEYS is empty!")
             await asyncio.sleep(60)
             continue
-
         ping_enabled = get_setting("ping_mode", 0) == 1
         stats = {"leagues_scanned": 0, "matches_found": 0, "api_errors": 0, "google_errors": 0, "skipped_odds": 0}
-        
         m_odds = get_setting("min_odds", 1.50)
         max_o = get_setting("max_odds", 2.50)
         m_mult = get_setting("multiplier", 0.90)
-        
         for league in LEAGUES:
             try:
-                # Используем текущий ключ
                 current_key = API_KEYS[idx]
-                r = requests.get(
-                    f"https://api.the-odds-api.com/v4/sports/{league}/odds/", 
-                    params={
-                        'apiKey': current_key, 
-                        'regions': 'eu', 
-                        'markets': 'totals',
-                        'oddsFormat': 'decimal'
-                    }, 
-                    timeout=15
-                )
-                
+                r = requests.get(f"https://api.the-odds-api.com/v4/sports/{league}/odds/", params={'apiKey': current_key, 'regions': 'eu', 'markets': 'totals', 'oddsFormat': 'decimal'}, timeout=15)
                 if r.status_code == 200:
                     stats["leagues_scanned"] += 1
                     data = r.json()
-                    # Если данных по лиге нет, идем дальше
-                    if not data:
-                        continue
-                        
+                    if not data: continue
                     for ev in data:
                         if ev['id'] in sent: continue
                         target_odds = None
-                        
-                        # Логика поиска кэфа
                         for bm in ev.get('bookmakers', []):
                             for mkt in bm.get('markets', []):
                                 if mkt['key'] == 'totals':
                                     for outcome in mkt['outcomes']:
                                         if outcome['name'] == 'Over' and outcome.get('point') == 2.5:
-                                            target_odds = outcome['price']
-                                            break
-                        
+                                            target_odds = outcome['price']; break
                         if not target_odds: continue
-                        
                         final_odds = round(target_odds * m_mult, 2)
-                        
                         if not (m_odds <= final_odds <= max_o):
-                            stats["skipped_odds"] += 1
-                            continue
-                        
-                        # Анализ через Google
+                            stats["skipped_odds"] += 1; continue
                         itb_home, _ = await analyze_strict(ev['home_team'], is_home=True)
-                        
                         if itb_home == "CAPTCHA":
-                            stats["google_errors"] += 1
-                            continue
-                            
+                            stats["google_errors"] += 1; continue
                         if isinstance(itb_home, int) and itb_home >= 3:
-                            stats["matches_found"] += 1
-                            sent.add(ev['id'])
+                            stats["matches_found"] += 1; sent.add(ev['id'])
                             h, a = clean_and_translate(ev['home_team']), clean_and_translate(ev['away_team'])
-                            
                             msg_vip = (f"💎 <b>Baron’s Verdict</b>\n⚽️ <code>{h}</code> — <code>{a}</code>\n"
                                        f"━━━━━━━━━━━━━━━━━━━━\n📊 Анализ: Высокая результативность ({itb_home}/5)\n"
                                        f"🔥 Ставка: <b>ИТБ 1 (1.5)</b>\n📈 Расч. кэф: <code>{final_odds}</code>\n━━━━━━━━━━━━━━━━━━━━")
-                            
                             await bot.send_message(CHANNEL_ID, msg_vip, parse_mode=ParseMode.HTML)
-                            
                             kb = InlineKeyboardBuilder()
                             kb.button(text="💰 Поставил", callback_data="pred_place")
                             kb.button(text="⏩ Пропустил", callback_data="pred_skip")
                             await bot.send_message(ADMIN_GROUP_ID, msg_vip, reply_markup=kb.as_markup(), message_thread_id=T_PRED, parse_mode=ParseMode.HTML)
-                
                 elif r.status_code == 429:
-                    stats["api_errors"] += 1
-                    idx = (idx + 1) % len(API_KEYS) # Меняем ключ при лимите
-                else:
-                    logger.error(f"API Error {r.status_code}: {r.text}")
-                    stats["api_errors"] += 1
-                    
-            except Exception as e:
-                logger.error(f"Scanner Error: {e}")
-                stats["api_errors"] += 1
-            
-            await asyncio.sleep(1) # Короткая пауза между лигами
-
-        # Отчет в логи
+                    stats["api_errors"] += 1; idx = (idx + 1) % len(API_KEYS)
+                else: stats["api_errors"] += 1
+            except: stats["api_errors"] += 1
+            await asyncio.sleep(1)
         if ping_enabled:
-            report = (f"🛰 <b>Отчет круга анализа</b>\n"
-                      f"✅ Лиг успешно: {stats['leagues_scanned']}\n"
-                      f"🎯 Сигналов: {stats['matches_found']}\n"
-                      f"📈 Кэф не подошел: {stats['skipped_odds']}\n"
-                      f"🤖 Капча Google: {stats['google_errors']}\n"
-                      f"⚠️ Ошибки API: {stats['api_errors']}")
+            report = (f"🛰 <b>Отчет круга анализа</b>\n✅ Лиг: {stats['leagues_scanned']}\n🎯 Сигналов: {stats['matches_found']}\n📈 Кэф мимо: {stats['skipped_odds']}\n🤖 Капча: {stats['google_errors']}\n⚠️ Ошибки API: {stats['api_errors']}")
             await bot.send_message(ADMIN_GROUP_ID, report, message_thread_id=T_LOGS, parse_mode=ParseMode.HTML)
-        
-        await asyncio.sleep(1800) # Ждем 30 минут до следующего круга
-
+        await asyncio.sleep(1800)
 
 async def main():
     init_db()
@@ -569,3 +467,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
