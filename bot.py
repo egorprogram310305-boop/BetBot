@@ -227,12 +227,12 @@ async def adm_ok(c: types.CallbackQuery):
         kb_user = InlineKeyboardBuilder()
         kb_user.button(text="🚀 Начать анализировать матчи", callback_data="start_scanning_msg")
         
-    await bot.send_message(
-        int(uid), 
-        "🎉 <b>Оплата успешно подтверждена!</b> Доступ открыт.", 
-        reply_markup=kb_user.as_markup(), 
-        parse_mode=ParseMode.HTML
-        )
+        await bot.send_message(
+            int(uid), 
+            "🎉 <b>Оплата успешно подтверждена!</b> Доступ открыт.", 
+            reply_markup=kb_user.as_markup(), 
+            parse_mode=ParseMode.HTML
+            )
     except Exception as e:
         logger.error(f"Ошибка уведомления: {e}")
 
