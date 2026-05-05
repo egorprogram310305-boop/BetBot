@@ -230,12 +230,17 @@ async def adm_no(c: types.CallbackQuery):
     await c.message.edit_text(f"{c.message.text}\n\n❌ <b>ОТКЛОНЕНО</b>")
 
 # --- ADMIN PANEL ---
-# --- ADMIN PANEL ---
+
 @dp.message(Command("admin"))
 async def admin_panel(m: types.Message):
-    if m.from_user.id != ADMIN_ID and m.chat.id != ADMIN_GROUP_ID: return
+    # Проверка прав: только админ и только в админ-группе (или личке админа)
+    if m.from_user.id != ADMIN_ID:
+        return
+    
+    # Визуальный эффект набора текста
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     
+    # Получаем текущие настройки из БД
     mo = get_setting("min_odds", 1.5)
     ml = get_setting("multiplier", 0.9)
     td = get_setting("time_depth", 24)
@@ -251,34 +256,62 @@ async def admin_panel(m: types.Message):
     kb.button(text="📉 Множитель", callback_data="set_adm_mult")
     kb.button(text="⏳ Глубина", callback_data="set_adm_time")
     kb.button(text="📢 Рассылка", callback_data="start_broadcast")
-    await m.answer(text, reply_markup=kb.adjust(2).as_markup(), parse_mode=ParseMode.HTML, message_thread_id=T_MGMT)
+    
+    # ИСПОЛЬЗУЕМ bot.send_message для стабильности в топиках
+    await bot.send_message(
+        chat_id=m.chat.id,
+        text=text,
+        reply_markup=kb.adjust(2).as_markup(),
+        parse_mode=ParseMode.HTML,
+        message_thread_id=T_MGMT # Отправляем строго в топик Управление
+    )
 
 @dp.callback_query(F.data.startswith("set_adm_"))
 async def set_adm_params(c: types.CallbackQuery, state: FSMContext):
     action = c.data.replace("set_adm_", "")
-    prompts = {"min_odds": "минимальный кэф", "mult": "множитель", "time": "глубину анализа (в часах)"}
+    prompts = {
+        "min_odds": "минимальный кэф", 
+        "mult": "множитель", 
+        "time": "глубину анализа (в часах)"
+    }
     
-    await c.message.answer(f"🔢 Введите новое значение для: <b>{prompts.get(action, 'параметра')}</b>", 
-                           message_thread_id=T_MGMT, parse_mode=ParseMode.HTML)
+    await bot.send_message(
+        chat_id=c.message.chat.id,
+        text=f"🔢 Введите новое значение для: <b>{prompts.get(action, 'параметра')}</b>",
+        message_thread_id=T_MGMT,
+        parse_mode=ParseMode.HTML
+    )
     
     if action == "min_odds": await state.set_state(AdminStates.wait_min_odds)
     elif action == "mult": await state.set_state(AdminStates.wait_mult)
     elif action == "time": await state.set_state(AdminStates.wait_time)
+    await c.answer()
 
 @dp.message(StateFilter(AdminStates.wait_min_odds, AdminStates.wait_mult, AdminStates.wait_time))
 async def save_adm_params(m: types.Message, state: FSMContext):
-    await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
+    if m.chat.id != ADMIN_GROUP_ID: return
+    
     cur_state = await state.get_state()
     try:
-        val = float(m.text.replace(",", ".")) # Заменяем запятую на точку на всякий случай
+        val = float(m.text.replace(",", "."))
+        
         if "min_odds" in str(cur_state): set_setting("min_odds", val)
         elif "mult" in str(cur_state): set_setting("multiplier", val)
         elif "time" in str(cur_state): set_setting("time_depth", val)
-        await m.answer(f"✅ Настройка <b>{val}</b> успешно сохранена!", message_thread_id=T_MGMT, parse_mode=ParseMode.HTML)
-    except:
-        await m.answer("❌ Ошибка! Введите число (например: 1.5 или 0.9)", message_thread_id=T_MGMT)
+        
+        await bot.send_message(
+            chat_id=m.chat.id,
+            text=f"✅ Настройка <b>{val}</b> успешно сохранена!",
+            message_thread_id=T_MGMT,
+            parse_mode=ParseMode.HTML
+        )
+    except ValueError:
+        await bot.send_message(
+            chat_id=m.chat.id,
+            text="❌ Ошибка! Введите число (например: 1.5 или 0.9)",
+            message_thread_id=T_MGMT
+        )
     await state.clear()
-
 
 @dp.message(Command("give_sub"))
 async def give_sub_cmd(m: types.Message, command: CommandObject):
@@ -286,30 +319,73 @@ async def give_sub_cmd(m: types.Message, command: CommandObject):
     try:
         uid, days = map(int, command.args.split())
         end = datetime.now(timezone.utc) + timedelta(days=days)
-        conn = psycopg2.connect(DB_URL); curr = conn.cursor()
-        curr.execute("UPDATE users SET sub_end = %s WHERE uid = %s", (end, uid)); conn.commit(); curr.close(); conn.close()
-        await m.answer(f"✅ Доступ выдан ID {uid} на {days} дней.", message_thread_id=T_MGMT)
-        await bot.send_message(uid, f"🎁 Администратор выдал вам доступ на {days} дней!")
-    except Exception as e: await m.answer("Формат: /give_sub ID ДНИ", message_thread_id=T_MGMT)
+        
+        conn = psycopg2.connect(DB_URL)
+        curr = conn.cursor()
+        curr.execute("UPDATE users SET sub_end = %s WHERE uid = %s", (end, uid))
+        conn.commit()
+        curr.close()
+        conn.close()
+        
+        await bot.send_message(
+            chat_id=m.chat.id,
+            text=f"✅ Доступ выдан ID {uid} на {days} дней.",
+            message_thread_id=T_MGMT
+        )
+        # Уведомляем пользователя в личку
+        try:
+            await bot.send_message(uid, f"🎁 Администратор выдал вам доступ на {days} дней!")
+        except:
+            pass
+    except:
+        await bot.send_message(
+            chat_id=m.chat.id,
+            text="⚠️ Формат: <code>/give_sub ID ДНИ</code>",
+            message_thread_id=T_MGMT,
+            parse_mode=ParseMode.HTML
+        )
 
 @dp.callback_query(F.data == "start_broadcast")
 async def start_broad(c: types.CallbackQuery, state: FSMContext):
-    await c.message.answer("Отправьте сообщение для рассылки (можно с фото/видео):", message_thread_id=T_MGMT)
+    await bot.send_message(
+        chat_id=c.message.chat.id,
+        text="📝 Отправьте сообщение для рассылки (можно с фото/видео):",
+        message_thread_id=T_MGMT
+    )
     await state.set_state(AdminStates.wait_broadcast_msg)
+    await c.answer()
 
 @dp.message(StateFilter(AdminStates.wait_broadcast_msg))
 async def process_broad(m: types.Message, state: FSMContext):
-    conn = psycopg2.connect(DB_URL); curr = conn.cursor()
-    curr.execute("SELECT uid FROM users"); users = curr.fetchall()
+    if m.chat.id != ADMIN_GROUP_ID: return
+    
+    conn = psycopg2.connect(DB_URL)
+    curr = conn.cursor()
+    curr.execute("SELECT uid FROM users")
+    users = curr.fetchall()
+    curr.close()
+    conn.close()
+    
     count = 0
-    await m.answer("⏳ Рассылка начата...", message_thread_id=T_MGMT)
+    status_msg = await bot.send_message(m.chat.id, "⏳ Рассылка начата...", message_thread_id=T_MGMT)
+    
     for u in users:
         try:
-            await m.copy_to(u[0])
-            count += 1; await asyncio.sleep(0.05)
-        except: pass
-    await m.answer(f"📢 Рассылка завершена. Доставлено: {count}", message_thread_id=T_MGMT)
+            # copy_to позволяет переслать сообщение без пометки "переслано"
+            await m.copy_to(chat_id=u[0])
+            count += 1
+            await asyncio.sleep(0.05) # Небольшая пауза, чтобы не спамить API Telegram
+        except:
+            continue
+            
+    await bot.send_message(
+        chat_id=m.chat.id,
+        text=f"📢 Рассылка завершена.\nДоставлено: <b>{count}</b> пользователям.",
+        message_thread_id=T_MGMT,
+        parse_mode=ParseMode.HTML
+    )
     await state.clear()
+
 
 # --- PREDICTIONS INTERACTION ---
 @dp.callback_query(F.data == "pred_skip")
