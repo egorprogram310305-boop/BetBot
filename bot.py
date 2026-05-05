@@ -192,7 +192,7 @@ async def btn_analytics(m: types.Message):
         kb_user.button(text="🎯 Поиск Прогнозов", callback_data="start_scanning_msg")
         
         await m.answer(
-            "Ваша подписка активна! Вы можете перейти в закрытый канал с прогнозами.", 
+            "✅ Ваша подписка активна! Начинайте поиск прогнозов🔎", 
             reply_markup=kb_user.as_markup()
         )
     else:
