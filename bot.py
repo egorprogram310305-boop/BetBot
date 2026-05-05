@@ -443,13 +443,19 @@ async def bet_result(c: types.CallbackQuery):
     final_kb = InlineKeyboardBuilder().button(text=f"{res_text} ({profit_str})", callback_data="noop")
     await c.message.edit_reply_markup(reply_markup=final_kb.as_markup())
 
-# --- FULL SCANNER ---
+# --- SCANNER (ОСНОВНАЯ ЛОГИКА ИСПРАВЛЕНА ТУТ) ---
 async def scanner():
     sent = set()
     idx = 0
     
     while True:
-        if not API_KEYS: await asyncio.sleep(60); continue
+        if not API_KEYS: 
+            await asyncio.sleep(60)
+            continue
+        
+        # Переменные для отчета
+        ping_enabled = get_setting("ping_mode", 0) == 1
+        stats = {"leagues_scanned": 0, "matches_found": 0, "api_errors": 0, "google_errors": 0, "skipped_odds": 0}
         
         m_odds = get_setting("min_odds", 1.50)
         max_o = get_setting("max_odds", 2.50)
@@ -458,57 +464,89 @@ async def scanner():
         
         for league in LEAGUES:
             try:
+                # Используем маркет totals для корректного анализа голов
                 r = requests.get(f"https://api.the-odds-api.com/v4/sports/{league}/odds/", 
-                                 params={'apiKey': API_KEYS[idx], 'regions': 'eu', 'markets': 'h2h'})
+                                 params={'apiKey': API_KEYS[idx], 'regions': 'eu', 'markets': 'totals'}, timeout=10)
+                
                 if r.status_code == 200:
-                    for ev in r.json():
+                    stats["leagues_scanned"] += 1
+                    data = r.json()
+                    if not data and ping_enabled: logger.info(f"Лига {league} пуста")
+                    
+                    for ev in data:
                         if ev['id'] in sent: continue
-                        start = datetime.fromisoformat(ev['commence_time'].replace('Z', '+00:00'))
-                        now = datetime.now(timezone.utc)
-                        hours_left = (start - now).total_seconds() / 3600
                         
-                        if 1.0 < hours_left <= t_depth:
-                            price = ev['bookmakers'][0]['markets'][0]['outcomes'][0]['price']
-                            final_odds = round(price * m_mult, 2)
+                        # Поиск кэфа на ТБ 2.5
+                        target_odds = None
+                        try:
+                            for bm in ev.get('bookmakers', []):
+                                for mkt in bm.get('markets', []):
+                                    if mkt['key'] == 'totals':
+                                        for outcome in mkt['outcomes']:
+                                            if outcome['name'] == 'Over' and outcome.get('point') == 2.5:
+                                                target_odds = outcome['price']
+                                                break
+                        except: continue
+
+                        if not target_odds: continue
+                        
+                        final_odds = round(target_odds * m_mult, 2)
+                        if not (m_odds <= final_odds <= max_o):
+                            stats["skipped_odds"] += 1
+                            continue
+                        
+                        # Анализ Google
+                        itb_home, _ = await analyze_strict(ev['home_team'], is_home=True)
+                        
+                        if itb_home == "CAPTCHA":
+                            stats["google_errors"] += 1
+                            continue
                             
-                            if not (m_odds <= final_odds <= max_o):
-                                await bot.send_message(ADMIN_GROUP_ID, f"⏩ Пропуск по кэфу: {ev['home_team']} ({final_odds})", message_thread_id=T_LOGS)
-                                continue
+                        if isinstance(itb_home, int) and itb_home >= 3: # Порог 3 для стабильности
+                            stats["matches_found"] += 1
+                            sent.add(ev['id'])
+                            h, a = clean_and_translate(ev['home_team']), clean_and_translate(ev['away_team'])
                             
-                            itb_home, _ = await analyze_strict(ev['home_team'], is_home=True)
+                            msg_vip = (f"💎 <b>Baron’s Verdict</b>\n⚽️ <code>{h}</code> — <code>{a}</code>\n"
+                                       f"━━━━━━━━━━━━━━━━━━━━\n"
+                                       f"📊 Анализ: Высокая результативность ({itb_home}/5)\n"
+                                       f"🔥 Ставка: <b>ИТБ 1 (1.5)</b>\n"
+                                       f"📈 Расч. кэф: <code>{final_odds}</code>\n"
+                                       f"━━━━━━━━━━━━━━━━━━━━")
+                            await bot.send_message(CHANNEL_ID, msg_vip, parse_mode=ParseMode.HTML)
                             
-                            if itb_home == "CAPTCHA":
-                                await bot.send_message(ADMIN_GROUP_ID, "⚠️ Google CAPCHA!", message_thread_id=T_LOGS)
-                                continue
-                            if itb_home == "CANCEL":
-                                await bot.send_message(ADMIN_GROUP_ID, f"🛡 Сильная защита: {ev['home_team']} - Отмена", message_thread_id=T_LOGS)
-                                continue
-                                
-                            if isinstance(itb_home, int) and itb_home >= 4:
-                                sent.add(ev['id'])
-                                h, a = clean_and_translate(ev['home_team']), clean_and_translate(ev['away_team'])
-                                
-                                msg_vip = (f"💎 <b>Baron’s Verdict</b>\n⚽️ <code>{h}</code> — <code>{a}</code>\n"
-                                           f"━━━━━━━━━━━━━━━━━━━━\n"
-                                           f"📊 Анализ: Высокая результативность дома ({itb_home}/5)\n"
-                                           f"🔥 Ставка: <b>ИТБ 1 (1.5)</b>\n"
-                                           f"📈 Расч. кэф: <code>{final_odds}</code>\n"
-                                           f"━━━━━━━━━━━━━━━━━━━━")
-                                await bot.send_message(CHANNEL_ID, msg_vip, parse_mode=ParseMode.HTML)
-                                
-                                kb = InlineKeyboardBuilder()
-                                kb.button(text="💰 Поставил", callback_data="pred_place")
-                                kb.button(text="⏩ Пропустил", callback_data="pred_skip")
-                                await bot.send_message(ADMIN_GROUP_ID, msg_vip, reply_markup=kb.as_markup(), message_thread_id=T_PRED, parse_mode=ParseMode.HTML)
-                            else:
-                                await bot.send_message(ADMIN_GROUP_ID, f"📉 Слабая стата: {ev['home_team']}", message_thread_id=T_LOGS)
-                                
+                            kb = InlineKeyboardBuilder()
+                            kb.button(text="💰 Поставил", callback_data="pred_place")
+                            kb.button(text="⏩ Пропустил", callback_data="pred_skip")
+                            await bot.send_message(ADMIN_GROUP_ID, msg_vip, reply_markup=kb.as_markup(), message_thread_id=T_PRED, parse_mode=ParseMode.HTML)
+                            
                 elif r.status_code == 429:
                     idx = (idx + 1) % len(API_KEYS)
-            except: pass
-            await asyncio.sleep(3)
+                    stats["api_errors"] += 1
+                else:
+                    stats["api_errors"] += 1
+            except Exception as e:
+                logger.error(f"Scanner error: {e}")
+                stats["api_errors"] += 1
+            await asyncio.sleep(2) # Пауза между лигами
+            
+        # Отправка отчета "PING", если режим включен
+        if ping_enabled:
+            report = (
+                f"🛰 <b>Отчет круга анализа</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"✅ Лиг просканировано: <code>{stats['leagues_scanned']}</code>\n"
+                f"🎯 Найдено сигналов: <code>{stats['matches_found']}</code>\n"
+                f"📉 Скипнуто по кэфу: <code>{stats['skipped_odds']}</code>\n"
+                f"⚠️ Ошибки API: <code>{stats['api_errors']}</code>\n"
+                f"🚫 Ошибки Google (Капча): <code>{stats['google_errors']}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"⏰ Следующий круг через 30 мин."
+            )
+            await bot.send_message(ADMIN_GROUP_ID, report, message_thread_id=T_LOGS, parse_mode=ParseMode.HTML)
             
         await asyncio.sleep(1800)
+ # Проверка каждые 10 минут
 
 # --- WEB SERVER (For Render Keep-Alive) ---
 async def main():
