@@ -245,7 +245,7 @@ async def adm_no(c: types.CallbackQuery):
     except: pass
     await c.message.edit_text(f"{c.message.text}\n\n❌ <b>ОТКЛОНЕНО</b>")
     
-    @dp.callback_query(F.data == "start_scanning_msg")
+@dp.callback_query(F.data == "start_scanning_msg")
 async def process_start_scanning_press(c: types.CallbackQuery):
     await c.message.answer(
         "🔎 Сканирование матчей началось… Как появится идеальный прогноз, вам придет уведомление 📣"
