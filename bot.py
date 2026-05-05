@@ -138,7 +138,7 @@ async def analyze_strict(team_name, is_home):
 # --- UI HELPER ---
 def main_menu_kb():
     builder = ReplyKeyboardBuilder()
-    builder.button(text="📊 Аналитика")
+    builder.button(text="🎯 Поиск Прогнозов")
     builder.button(text="👤 Профиль")
     builder.button(text="💳 Подписка")
     return builder.adjust(2).as_markup(resize_keyboard=True)
@@ -153,9 +153,15 @@ async def cmd_start(m: types.Message):
         await bot.send_message(ADMIN_GROUP_ID, f"🆕 <b>Новый пользователь!</b>\n👤 @{m.from_user.username} (<code>{m.from_user.id}</code>)", message_thread_id=T_USERS, parse_mode=ParseMode.HTML)
     
     welcome_text = (
-        "🎩 <b>Добро пожаловать в Baron’s Verdict!</b>\n\n"
-        "Мы анализируем сотни матчей с помощью алгоритмов, отбирая только самые надежные исходы на индивидуальные тоталы.\n\n"
-        "<i>Воспользуйтесь меню ниже для управления аккаунтом.</i>"
+        "🎩 <b>Baron’s Verdict: Твой вердикт — прибыли!</b>\n\n"
+        "Добро пожаловать в закрытый аналитический клуб! Здесь решения принимаются на основе данных, а не эмоций. Наши алгоритмы ежедневно фильтруют сотни событий, оставляя только самые перспективные индивидуальные тоталы.
+🎁 Тебе открыт VIP-доступ на 3 дня!
+Используй это время, чтобы бесплатно протестировать точность наших прогнозов и ощутить мощь алгоритмического беттинга.
+📍 Твой результат сегодня — это наша аналитика вчера.\n\n"
+        "<i>Выбирай действие:
+1.	🎯 Получить прогноз — актуальные исходы на ближайшие матчи.
+2.	📊 Статистика — прозрачная история наших побед.
+3.	👤 Профиль — статус твоей подписки и настройки.</i>"
     )
     if trial_given:
         welcome_text += "\n\n🎁 Вам автоматически начислен <b>пробный доступ на 3 дня!</b> Вы уже можете получать прогнозы."
@@ -225,7 +231,7 @@ async def adm_ok(c: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("adm_no_"))
 async def adm_no(c: types.CallbackQuery):
     uid = c.data.split("_")[2]
-    try: await bot.send_message(int(uid), "❌ <b>Оплата не найдена.</b> Заявка отклонена. Если это ошибка, обратитесь к администратору.", parse_mode=ParseMode.HTML)
+    try: await bot.send_message(int(uid), "❌ <b>Оплата не найдена.</b> Заявка отклонена. Если это ошибка, обратитесь к администратору в описании бота.", parse_mode=ParseMode.HTML)
     except: pass
     await c.message.edit_text(f"{c.message.text}\n\n❌ <b>ОТКЛОНЕНО</b>")
 
