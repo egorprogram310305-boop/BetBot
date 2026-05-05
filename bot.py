@@ -222,16 +222,16 @@ async def adm_ok(c: types.CallbackQuery):
     conn = psycopg2.connect(DB_URL); curr = conn.cursor()
     curr.execute("UPDATE users SET sub_end = %s WHERE uid = %s", (end, int(uid))); conn.commit(); curr.close(); conn.close()
     
-        try:
-        # Теперь тут callback_data вместо url
+    try:
+    # Теперь тут callback_data вместо url
         kb_user = InlineKeyboardBuilder()
         kb_user.button(text="🚀 Начать анализировать матчи", callback_data="start_scanning_msg")
         
-        await bot.send_message(
-            int(uid), 
-            "🎉 <b>Оплата успешно подтверждена!</b> Доступ открыт.", 
-            reply_markup=kb_user.as_markup(), 
-            parse_mode=ParseMode.HTML
+    await bot.send_message(
+        int(uid), 
+        "🎉 <b>Оплата успешно подтверждена!</b> Доступ открыт.", 
+        reply_markup=kb_user.as_markup(), 
+        parse_mode=ParseMode.HTML
         )
     except Exception as e:
         logger.error(f"Ошибка уведомления: {e}")
