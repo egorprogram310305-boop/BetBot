@@ -294,6 +294,20 @@ async def set_adm_params(c: types.CallbackQuery, state: FSMContext):
 
 @dp.message(StateFilter(AdminStates.wait_min_odds, AdminStates.wait_mult, AdminStates.wait_time))
 async def save_adm_params(m: types.Message, state: FSMContext):
+    @dp.message(Command("ping"))
+async def cmd_ping_toggle(m: types.Message, command: CommandObject):
+    if m.from_user.id != ADMIN_ID: return
+    
+    arg = command.args
+    if arg == "999":
+        set_setting("ping_mode", "1")
+        await m.answer("🛰 **Режим детального отчета ВКЛЮЧЕН.** Бот будет присылать статус каждого круга в Логи.", message_thread_id=T_MGMT, parse_mode=ParseMode.HTML)
+    elif arg == "1":
+        set_setting("ping_mode", "0")
+        await m.answer("💤 **Режим детального отчета ВЫКЛЮЧЕН.**", message_thread_id=T_MGMT, parse_mode=ParseMode.HTML)
+    else:
+        await m.answer("⚠️ Используйте: `/ping 999` (ВКЛ) или `/ping 1` (ВЫКЛ)", message_thread_id=T_MGMT, parse_mode=ParseMode.HTML)
+
     if m.chat.id != ADMIN_GROUP_ID: return
     
     cur_state = await state.get_state()
