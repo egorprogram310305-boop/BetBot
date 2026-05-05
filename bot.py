@@ -230,7 +230,7 @@ async def adm_ok(c: types.CallbackQuery):
     try:
     # Теперь тут callback_data вместо url
         kb_user = InlineKeyboardBuilder()
-        kb_user.button(text="🚀 Начать анализировать матчи", callback_data="start_scanning_msg")
+        kb_user.button(text="🎯 Поиск прогнозов", callback_data="start_scanning_msg")
         
         await bot.send_message(
             int(uid), 
