@@ -68,7 +68,9 @@ def init_db():
         conn = psycopg2.connect(DB_URL); curr = conn.cursor()
         curr.execute("CREATE TABLE IF NOT EXISTS users (uid BIGINT PRIMARY KEY, username TEXT, sub_end TIMESTAMP, trial_used INTEGER DEFAULT 0)")
         curr.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
-        curr.execute("INSERT INTO settings (key, value) VALUES ('min_odds', '1.50'), ('max_odds', '2.50'), ('multiplier', '0.90'), ('time_depth', '24') ON CONFLICT DO NOTHING")
+        curr.execute("""
+    INSERT INTO settings (key, value) 
+    VALUES ('min_odds', '1.50'), ('max_odds', '2.50'), ('multiplier', '0.90'), ('time_depth', '24'), ('ping_mode', '0') ON CONFLICT DO NOTHING""")
         conn.commit(); curr.close(); conn.close()
     except Exception as e: logger.error(f"DB Error: {e}")
 
@@ -220,11 +222,20 @@ async def adm_ok(c: types.CallbackQuery):
     conn = psycopg2.connect(DB_URL); curr = conn.cursor()
     curr.execute("UPDATE users SET sub_end = %s WHERE uid = %s", (end, int(uid))); conn.commit(); curr.close(); conn.close()
     
-    try:
-        invite_link = (await bot.get_chat(CHANNEL_ID)).invite_link or f"https://t.me/c/{CHANNEL_ID.replace('-100','')}"
-        kb_user = InlineKeyboardBuilder().button(text="🚀 Начать анализировать матчи", url=invite_link)
-        await bot.send_message(int(uid), "🎉 <b>Оплата успешно подтверждена!</b> Доступ открыт.", reply_markup=kb_user.as_markup(), parse_mode=ParseMode.HTML)
-    except: pass
+        try:
+        # Теперь тут callback_data вместо url
+        kb_user = InlineKeyboardBuilder()
+        kb_user.button(text="🚀 Начать анализировать матчи", callback_data="start_scanning_msg")
+        
+        await bot.send_message(
+            int(uid), 
+            "🎉 <b>Оплата успешно подтверждена!</b> Доступ открыт.", 
+            reply_markup=kb_user.as_markup(), 
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logger.error(f"Ошибка уведомления: {e}")
+
     await c.message.edit_text(f"{c.message.text}\n\n✅ <b>ОДОБРЕНО</b>")
 
 @dp.callback_query(F.data.startswith("adm_no_"))
@@ -233,6 +244,15 @@ async def adm_no(c: types.CallbackQuery):
     try: await bot.send_message(int(uid), "❌ <b>Оплата не найдена.</b> Заявка отклонена. Если это ошибка, обратитесь к администратору в описании бота.", parse_mode=ParseMode.HTML)
     except: pass
     await c.message.edit_text(f"{c.message.text}\n\n❌ <b>ОТКЛОНЕНО</b>")
+    
+    @dp.callback_query(F.data == "start_scanning_msg")
+async def process_start_scanning_press(c: types.CallbackQuery):
+    await c.message.answer(
+        "🔎 Сканирование матчей началось… Как появится идеальный прогноз, вам придет уведомление 📣"
+    )
+    # Это убирает состояние загрузки на кнопке
+    await c.answer()
+
 
 # --- ADMIN PANEL ---
 
