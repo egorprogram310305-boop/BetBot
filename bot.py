@@ -330,6 +330,22 @@ async def process_broad(m: types.Message, state: FSMContext):
         except: continue
     await bot.send_message(m.chat.id, f"📢 Рассылка завершена. Доставлено: {count}", message_thread_id=T_MGMT)
     await state.clear()
+@dp.message(Command("ping"))
+async def cmd_ping_toggle(m: types.Message, command: CommandObject):
+    # Проверяем, что пишет именно админ
+    if m.from_user.id != ADMIN_ID: 
+        return
+        
+    arg = command.args # Получаем то, что написано после /ping
+    
+    if arg == "999":
+        set_setting("ping_mode", "1")
+        await m.answer("🛰 <b>PING ON:</b> Детальные отчеты включены в Логи.", message_thread_id=T_MGMT, parse_mode=ParseMode.HTML)
+    elif arg == "1":
+        set_setting("ping_mode", "0")
+        await m.answer("💤 <b>PING OFF:</b> Детальные отчеты выключены.", message_thread_id=T_MGMT, parse_mode=ParseMode.HTML)
+    else:
+        await m.answer("⚠️ Используйте: <code>/ping 999</code> (ВКЛ) или <code>/ping 1</code> (ВЫКЛ)", message_thread_id=T_MGMT, parse_mode=ParseMode.HTML)
 
 # --- PREDICTIONS INTERACTION ---
 @dp.callback_query(F.data == "pred_skip")
