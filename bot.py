@@ -114,6 +114,21 @@ def get_sub_status(uid):
     return False
 
 # --- ANALYTICS & UTILS ---
+async def check_api_limits():
+    """Проверяет остаток запросов на всех ключах"""
+    results = []
+    for i, key in enumerate(API_KEYS):
+        try:
+            # Делаем пустой запрос к списку спортов, чтобы получить заголовки
+            r = requests.get(f"https://api.the-odds-api.com/v4/sports/?apiKey={key}", timeout=10)
+            # Извлекаем данные из заголовков ответа
+            remaining = r.headers.get('x-requests-remaining', '0')
+            quota = r.headers.get('x-requests-used', '0')
+            results.append(f"Ключ №{i+1}: Осталось <b>{remaining}</b> (Использовано: {quota})")
+        except:
+            results.append(f"Ключ №{i+1}: ❌ Ошибка подключения")
+    return "\n".join(results)
+
 def clean_and_translate(name):
     bad = ["U23", "U21", "U19", "FC", "CF", "SSC", "AS", "Utd", "United", "BSC", "AC", "City", "Real", "St", "De", "Club", "FK"]
     cleaned = " ".join([w for w in name.split() if w not in bad]).strip()
@@ -262,6 +277,20 @@ async def process_start_scanning_press(c: types.CallbackQuery):
 # --- ADMIN PANEL ---
 
 @dp.message(Command("admin"))
+@dp.message(Command("limits"))
+async def cmd_limits(m: types.Message):
+    # Проверка, что команду вызывает админ
+    if m.from_user.id != ADMIN_ID:
+        return
+    
+    await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
+    report = await check_api_limits()
+    
+    text = (f"📊 <b>Статус API квот:</b>\n\n{report}\n\n"
+            f"<i>Обновление лимитов происходит раз в месяц.</i>")
+    
+    await m.answer(text, parse_mode=ParseMode.HTML, message_thread_id=T_MGMT)
+
 async def admin_panel(m: types.Message):
     if m.from_user.id != ADMIN_ID: return
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
