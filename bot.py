@@ -184,12 +184,17 @@ async def btn_sub(m: types.Message):
     for tid, d in TARIFFS.items(): kb.button(text=f"{d['name']} - {d['price']}₽", callback_data=f"buy_{tid}")
     await m.answer("📊 <b>Выберите тарифный план:</b>\n<i>Инвестируйте в качественную аналитику.</i>", reply_markup=kb.adjust(1).as_markup(), parse_mode=ParseMode.HTML)
 
-@dp.message(F.text == "🎯 Поиск Прогнозов")
+@dp.message(F.text == "🎯 Поиск прогнозов")
 async def btn_analytics(m: types.Message):
     if get_sub_status(m.from_user.id):
-        invite_link = (await bot.get_chat(CHANNEL_ID)).invite_link or f"https://t.me/c/{CHANNEL_ID.replace('-100','')}"
-        kb_user = InlineKeyboardBuilder().button(text="🚀 Перейти к прогнозам", url=invite_link)
-        await m.answer("Ваша подписка активна! Вы можете перейти в закрытый канал с прогнозами.", reply_markup=kb_user.as_markup())
+        # Теперь здесь нет ссылки, а есть callback_data
+        kb_user = InlineKeyboardBuilder()
+        kb_user.button(text="🎯 Поиск прогнозов", callback_data="start_scanning_msg")
+        
+        await m.answer(
+            "Ваша подписка активна! Вы можете перейти в закрытый канал с прогнозами.", 
+            reply_markup=kb_user.as_markup()
+        )
     else:
         await m.answer("У вас нет активной подписки. Перейдите в раздел 💳 Подписка.")
 
