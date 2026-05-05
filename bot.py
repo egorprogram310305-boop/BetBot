@@ -38,10 +38,10 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 TARIFFS = {
-    "mini": {"name": "МиниⓂ️", "days": 3, "price": 149},
-    "lite": {"name": "Лайт✨", "days": 7, "price": 299},
-    "classic": {"name": "Классика🎩", "days": 30, "price": 999},
-    "level": {"name": "Уровень💹", "days": 60, "price": 1666}
+    "mini": {"name": "МиниⓂ️ (3 дней)", "days": 3, "price": 149},
+    "lite": {"name": "Лайт✨ (7 дней)", "days": 7, "price": 299},
+    "classic": {"name": "Классика🎩 (30 дней)", "days": 30, "price": 999},
+    "level": {"name": "Уровень💹 (60 дней)", "days": 60, "price": 1666}
 }
 
 LEAGUES = [
@@ -159,9 +159,8 @@ async def cmd_start(m: types.Message):
 Используй это время, чтобы бесплатно протестировать точность наших прогнозов и ощутить мощь алгоритмического беттинга.
 📍 Твой результат сегодня — это наша аналитика вчера.\n\n"""
         """<i>Выбирай действие:
-1.	🎯 Получить прогноз — актуальные исходы на ближайшие матчи.
-2.	📊 Статистика — прозрачная история наших побед.
-3.	👤 Профиль — статус твоей подписки и настройки.</i>"""
+1.	🎯 Получить прогноз — поиск актуальных исходов на ближайшие матчи.
+2.	👤 Профиль — статус твоей подписки и настройки.</i>"""
     )
     if trial_given:
         welcome_text += "\n\n🎁 Вам автоматически начислен <b>пробный доступ на 3 дня!</b> Вы уже можете получать прогнозы."
@@ -185,7 +184,7 @@ async def btn_sub(m: types.Message):
     for tid, d in TARIFFS.items(): kb.button(text=f"{d['name']} - {d['price']}₽", callback_data=f"buy_{tid}")
     await m.answer("📊 <b>Выберите тарифный план:</b>\n<i>Инвестируйте в качественную аналитику.</i>", reply_markup=kb.adjust(1).as_markup(), parse_mode=ParseMode.HTML)
 
-@dp.message(F.text == "📊 Аналитика")
+@dp.message(F.text == "🎯 поиск прогнозов")
 async def btn_analytics(m: types.Message):
     if get_sub_status(m.from_user.id):
         kb_user = InlineKeyboardBuilder().button(text="🚀 Перейти к прогнозам", url=f"https://t.me/{ (await bot.get_chat(CHANNEL_ID)).invite_link or 'c/'+CHANNEL_ID.replace('-100','') }")
