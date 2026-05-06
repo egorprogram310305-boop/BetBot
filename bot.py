@@ -279,6 +279,13 @@ async def check_api_limits_handler(c: types.CallbackQuery):
             message_thread_id=T_MGMT,
             parse_mode=ParseMode.HTML
         )
+        
+@dp.callback_query(F.data == "start_analysis_notice")
+async def process_analysis_notice(c: types.CallbackQuery):
+    # Убираем кнопку под сообщением и выводим нужный текст
+    await c.message.edit_reply_markup(reply_markup=None)
+    await c.message.answer("Анализ матчей начинается🔎 Как только будет найден прогноз, вы получите уведомление 🔔")
+    await c.answer()
 
 # --- ADMIN PANEL ---
 
