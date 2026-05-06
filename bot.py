@@ -28,6 +28,9 @@ API_KEYS = [k.strip() for k in os.getenv("ODDS_API_KEYS", "").split(",") if k.st
 REQUISITES = os.getenv("PAYMENT_REQUISITES", "Реквизиты не установлены")
 DB_URL = os.getenv("DATABASE_URL", "").replace("postgres://", "postgresql://", 1)
 
+# Флаг для тех. отчета (True - включен, False - выключен)
+SHOW_FULL_REPORT = False 
+
 T_MGMT = int(os.getenv("TOPIC_ID_MANAGEMENT", "0"))
 T_LOGS = int(os.getenv("TOPIC_ID_LOGS", "0")) 
 T_CASH = int(os.getenv("TOPIC_ID_PAYMENTS", "0"))
@@ -144,6 +147,21 @@ def main_menu_kb():
     return builder.adjust(2).as_markup(resize_keyboard=True)
 
 # --- BOT INTERFACE ---
+@dp.message(Command("ping"))
+async def cmd_ping_logic(m: types.Message, command: CommandObject):
+    global SHOW_FULL_REPORT
+    if m.from_user.id != ADMIN_ID: return
+    
+    arg = command.args
+    if arg == "999":
+        SHOW_FULL_REPORT = True
+        await m.answer("✅ <b>Режим детальной проверки включен.</b> Отчеты будут приходить в Тех. Лог.", parse_mode=ParseMode.HTML)
+    elif arg == "1":
+        SHOW_FULL_REPORT = False
+        await m.answer("🛑 <b>Режим детальной проверки выключен.</b>", parse_mode=ParseMode.HTML)
+    else:
+        await m.answer("Используйте: <code>/ping 999</code> для ВКЛ или <code>/ping 1</code> для ВЫКЛ.", parse_mode=ParseMode.HTML)
+
 @dp.message(Command("start"))
 async def cmd_start(m: types.Message):
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
@@ -505,6 +523,11 @@ async def scanner():
     while True:
         if not API_KEYS: await asyncio.sleep(60); continue
         
+        # Переменные для отчета
+        league_cnt = 0
+        sig_cnt = 0
+        err_cnt = 0
+        
         m_odds = get_setting("min_odds", 1.50)
         max_o = get_setting("max_odds", 2.50)
         m_mult = get_setting("multiplier", 0.90)
@@ -513,7 +536,9 @@ async def scanner():
         for league in LEAGUES:
             try:
                 r = requests.get(f"https://api.the-odds-api.com/v4/sports/{league}/odds/", 
-                                 params={'apiKey': API_KEYS[idx], 'regions': 'eu', 'markets': 'h2h'})
+                                 params={'apiKey': API_KEYS[idx], 'regions': 'eu', 'markets': 'h2h'}, timeout=10)
+                league_cnt += 1
+                
                 if r.status_code == 200:
                     for ev in r.json():
                         if ev['id'] in sent: continue
@@ -525,20 +550,16 @@ async def scanner():
                             price = ev['bookmakers'][0]['markets'][0]['outcomes'][0]['price']
                             final_odds = round(price * m_mult, 2)
                             
-                            if not (m_odds <= final_odds <= max_o):
-                                await bot.send_message(ADMIN_GROUP_ID, f"⏩ Пропуск по кэфу: {ev['home_team']} ({final_odds})", message_thread_id=T_LOGS)
-                                continue
+                            if not (m_odds <= final_odds <= max_o): continue
                             
                             itb_home, _ = await analyze_strict(ev['home_team'], is_home=True)
                             
                             if itb_home == "CAPTCHA":
-                                await bot.send_message(ADMIN_GROUP_ID, "⚠️ Google CAPCHA!", message_thread_id=T_LOGS)
-                                continue
-                            if itb_home == "CANCEL":
-                                await bot.send_message(ADMIN_GROUP_ID, f"🛡 Сильная защита: {ev['home_team']} - Отмена", message_thread_id=T_LOGS)
+                                err_cnt += 1
                                 continue
                                 
                             if isinstance(itb_home, int) and itb_home >= 4:
+                                sig_cnt += 1
                                 sent.add(ev['id'])
                                 h, a = clean_and_translate(ev['home_team']), clean_and_translate(ev['away_team'])
                                 
@@ -554,15 +575,29 @@ async def scanner():
                                 kb.button(text="💰 Поставил", callback_data="pred_place")
                                 kb.button(text="⏩ Пропустил", callback_data="pred_skip")
                                 await bot.send_message(ADMIN_GROUP_ID, msg_vip, reply_markup=kb.as_markup(), message_thread_id=T_PRED, parse_mode=ParseMode.HTML)
-                            else:
-                                await bot.send_message(ADMIN_GROUP_ID, f"📉 Слабая стата: {ev['home_team']}", message_thread_id=T_LOGS)
-                                
-                elif r.status_code == 429:
+                
+                elif r.status_code in [401, 429]:
+                    err_cnt += 1
                     idx = (idx + 1) % len(API_KEYS)
+            except: 
+                err_cnt += 1
+            await asyncio.sleep(2) # Пауза между лигами
+        
+        # ОТПРАВКА ОТЧЕТА (Команда /ping 999)
+        if SHOW_FULL_REPORT:
+            report = (
+                "⚙️ <b>Отчет круга анализа</b>\n"
+                f"✅ Лиг: {league_cnt}\n"
+                f"🎯 Сигналов: {sig_cnt}\n"
+                f"⚠️ Ошибки API: {err_cnt}\n"
+                f"⏰ Время: {datetime.now().strftime('%H:%M')}"
+            )
+            try:
+                await bot.send_message(ADMIN_GROUP_ID, report, message_thread_id=T_LOGS, parse_mode=ParseMode.HTML)
             except: pass
-            await asyncio.sleep(3)
-            
-        await asyncio.sleep(1800)
+
+        await asyncio.sleep(1800) # Ждем 30 минут до следующего круга
+
 
 # --- WEB SERVER (For Render Keep-Alive) ---
 async def main():
