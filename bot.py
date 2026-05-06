@@ -184,11 +184,11 @@ async def btn_sub(m: types.Message):
     for tid, d in TARIFFS.items(): kb.button(text=f"{d['name']} - {d['price']}₽", callback_data=f"buy_{tid}")
     await m.answer("📊 <b>Выберите тарифный план:</b>\n<i>Инвестируйте в качественную аналитику.</i>", reply_markup=kb.adjust(1).as_markup(), parse_mode=ParseMode.HTML)
 
-@dp.message(F.text == "🎯 поиск прогнозов")
+@dp.message(F.text == "🎯 Поиск Прогнозов")
 async def btn_analytics(m: types.Message):
     if get_sub_status(m.from_user.id):
-        kb_user = InlineKeyboardBuilder().button(text="🚀 Перейти к прогнозам", url=f"https://t.me/{ (await bot.get_chat(CHANNEL_ID)).invite_link or 'c/'+CHANNEL_ID.replace('-100','') }")
-        await m.answer("Ваша подписка активна! Вы можете перейти в закрытый канал с прогнозами.", reply_markup=kb_user.as_markup())
+        # Сообщение, которое ты просил
+        await m.answer("Анализ матчей начинается🔎 Как только будет найден прогноз, вы получите уведомление 🔔")
     else:
         await m.answer("У вас нет активной подписки. Перейдите в раздел 💳 Подписка.")
 
@@ -222,10 +222,12 @@ async def adm_ok(c: types.CallbackQuery):
     curr.execute("UPDATE users SET sub_end = %s WHERE uid = %s", (end, int(uid))); conn.commit(); curr.close(); conn.close()
     
     try:
-        kb_user = InlineKeyboardBuilder().button(text="🚀 Начать анализировать матчи", url=f"https://t.me/{ (await bot.get_chat(CHANNEL_ID)).invite_link or 'c/'+CHANNEL_ID.replace('-100','') }")
-        await bot.send_message(int(uid), "🎉 <b>Оплата успешно подтверждена!</b> Доступ открыт.", reply_markup=kb_user.as_markup(), parse_mode=ParseMode.HTML)
+        # Создаем кнопку, которая при нажатии отправит тот же текст
+        kb = InlineKeyboardBuilder().button(text="🚀 Начать анализировать матчи", callback_data="start_analysis_notice")
+        await bot.send_message(int(uid), "🎉 <b>Оплата успешно подтверждена!</b> Доступ открыт.", reply_markup=kb.as_markup(), parse_mode=ParseMode.HTML)
     except: pass
     await c.message.edit_text(f"{c.message.text}\n\n✅ <b>ОДОБРЕНО</b>")
+
 
 @dp.callback_query(F.data.startswith("adm_no_"))
 async def adm_no(c: types.CallbackQuery):
