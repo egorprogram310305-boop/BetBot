@@ -1,10 +1,12 @@
-import os
+
+    import os
 import asyncio
 import logging
 import requests
 import psycopg2
 import random
 import re
+import aiohttp
 from datetime import datetime, timezone, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode, ChatAction
@@ -114,18 +116,28 @@ def get_sub_status(uid):
     return False
 
 # --- ANALYTICS & UTILS ---
-async def check_api_limits():
-    """Проверяет остаток запросов на всех ключах"""
-    results = []
-    for i, key in enumerate(API_KEYS):
-        try:
-            r = requests.get(f"https://api.the-odds-api.com/v4/sports/?apiKey={key}", timeout=10)
+
+async def fetch_limit(session, i, key):
+    """Асинхронный запрос к одному ключу"""
+    url = f"https://api.the-odds-api.com/v4/sports/?apiKey={key}"
+    try:
+        async with session.get(url, timeout=10) as r:
             remaining = r.headers.get('x-requests-remaining', '0')
-            quota = r.headers.get('x-requests-used', '0')
-            results.append(f"Ключ №{i+1}: Осталось <b>{remaining}</b> (Использовано: {quota})")
-        except:
-            results.append(f"Ключ №{i+1}: ❌ Ошибка подключения")
-    return "\n".join(results)
+            used = r.headers.get('x-requests-used', '0')
+            if r.status_code == 200:
+                return f"Ключ №{i+1}: Осталось <b>{remaining}</b> (Использовано: {used})"
+            else:
+                return f"Ключ №{i+1}: ⚠️ Ошибка {r.status_code}"
+    except:
+        return f"Ключ №{i+1}: ❌ Тайм-аут/Ошибка"
+
+async def check_api_limits_fast():
+    """Параллельная проверка всех 74 ключей"""
+    async with aiohttp.ClientSession() as session:
+        tasks = []
+        for i, key in enumerate(API_KEYS):
+            tasks.append(fetch_limit(session, i, key))
+        return await asyncio.gather(*tasks)
 
 def clean_and_translate(name):
     bad = ["U23", "U21", "U19", "FC", "CF", "SSC", "AS", "Utd", "United", "BSC", "AC", "City", "Real", "St", "De", "Club", "FK"]
@@ -260,9 +272,17 @@ async def process_start_scanning_press(c: types.CallbackQuery):
 async def cmd_limits(m: types.Message):
     if m.from_user.id != ADMIN_ID: return
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
-    report = await check_api_limits()
-    text = (f"📊 <b>Статус API квот:</b>\n\n{report}\n\n<i>Обновление лимитов происходит раз в месяц.</i>")
-    await m.answer(text, parse_mode=ParseMode.HTML, message_thread_id=T_MGMT)
+    
+    results = await check_api_limits_fast()
+    header = "📊 <b>Статус API квот (74 ключа):</b>\n\n"
+    
+    # Разбиваем отчет на части по 20 ключей, чтобы не превысить лимит сообщения Telegram
+    chunk_size = 20
+    for i in range(0, len(results), chunk_size):
+        chunk = results[i:i + chunk_size]
+        text = (header if i == 0 else "") + "\n".join(chunk)
+        await m.answer(text, parse_mode=ParseMode.HTML, message_thread_id=T_MGMT)
+        await asyncio.sleep(0.5)
 
 @dp.message(Command("admin"))
 async def admin_panel(m: types.Message):
