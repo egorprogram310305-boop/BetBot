@@ -149,10 +149,11 @@ async def analyze_strict(team_name, is_home):
         scores = re.findall(r'(\d)-\d', content) 
         if not scores: return 0 
         
-                itb_h2h = sum(1 for s in scores[:5] if int(s) >= 2)
+        itb_h2h = sum(1 for s in scores[:5] if int(s) >= 2)
         return itb_h2h
     except:
         return 0
+
 
 # --- UI HELPER ---
 def main_menu_kb():
