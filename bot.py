@@ -262,6 +262,15 @@ async def btn_instruction(m: types.Message):
 async def btn_sub(m: types.Message):
     kb = InlineKeyboardBuilder()
     for tid, d in TARIFFS.items(): kb.button(text=f"{d['name']} - {d['price']}₽", callback_data=f"buy_{tid}")
+    # СЮДА ВСТАВЬ СВОЮ ССЫЛКУ, КОТОРУЮ ПОЛУЧИШЬ ПОСЛЕ НАЖАТИЯ PUBLISH
+    offer_link = "https://telegra.ph/Publichnaya-oferta-i-Politika-konfidencialnosti--Barons-Verdict-05-07"
+    
+    text = (
+        "📊 <b>Выберите тарифный план:</b>\n\n"
+        "<i>Оплачивая доступ, вы принимаете условия </i>"
+        f"<a href='{offer_link}'>Публичной оферты</a>"
+        "<i> и подтверждаете, что ознакомлены с отказом от ответственности.</i>"
+    )
     await m.answer("📊 <b>Выберите тарифный план:</b>\n<i>Инвестируйте в качественную аналитику.</i>", reply_markup=kb.adjust(1).as_markup(), parse_mode=ParseMode.HTML)
 
 @dp.message(F.text == "🎯 Поиск Прогнозов")
