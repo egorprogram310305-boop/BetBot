@@ -324,7 +324,7 @@ async def admin_panel(m: types.Message):
     text = (f"🛠 <b>Панель управления</b>\n\n"
             f"Ключей API: <b>{len(API_KEYS)}</b>\n"
             f"Мин. Кэф: <b>{mo}</b>\n"
-            f"Множитель: <b>{ml}</b>\n"
+            f"Баз. корреляция: <b>{ml}</b>\n"
             f"Анализ (часы): <b>{td}ч</b>")
     
     kb = InlineKeyboardBuilder()
@@ -546,11 +546,24 @@ async def scanner():
                         now = datetime.now(timezone.utc)
                         hours_left = (start - now).total_seconds() / 3600
                         
-                        if 1.0 < hours_left <= t_depth:
+                                                if 1.0 < hours_left <= t_depth:
                             price = ev['bookmakers'][0]['markets'][0]['outcomes'][0]['price']
-                            final_odds = round(price * m_mult, 2)
                             
-                            if not (m_odds <= final_odds <= max_o): continue
+                            # Динамический множитель
+                            if price < 1.45:
+                                dynamic_mult = m_mult * 1.30 
+                            elif 1.45 <= price < 1.85:
+                                dynamic_mult = m_mult * 1.15
+                            elif 1.85 <= price < 2.30:
+                                dynamic_mult = m_mult * 1.05
+                            else:
+                                dynamic_mult = m_mult * 0.90
+
+                            final_odds = round(price * dynamic_mult, 2)
+                            
+                            # --- ВНИМАНИЕ: Проверь, чтобы эти строки были строго под 'price' ---
+                            if not (m_odds <= final_odds <= max_o): 
+                                continue
                             
                             itb_home, _ = await analyze_strict(ev['home_team'], is_home=True)
                             
@@ -563,18 +576,31 @@ async def scanner():
                                 sent.add(ev['id'])
                                 h, a = clean_and_translate(ev['home_team']), clean_and_translate(ev['away_team'])
                                 
-                                msg_vip = (f"💎 <b>Baron’s Verdict</b>\n⚽️ <code>{h}</code> — <code>{a}</code>\n"
-                                           f"━━━━━━━━━━━━━━━━━━━━\n"
-                                           f"📊 Анализ: Высокая результативность дома ({itb_home}/5)\n"
-                                           f"🔥 Ставка: <b>ИТБ 1 (1.5)</b>\n"
-                                           f"📈 Расч. кэф: <code>{final_odds}</code>\n"
-                                           f"━━━━━━━━━━━━━━━━━━━━")
+                                # Форматируем дату и время (МСК +3)
+                                msk_time = start + timedelta(hours=3)
+                                date_str = msk_time.strftime('%d.%m')
+                                time_str = msk_time.strftime('%H:%M')
+
+                                # НОВЫЙ ДИЗАЙН КАК НА СКРИНШОТЕ
+                                msg_vip = (
+                                    f"💎 <b>Baron’s Verdict v7.3</b>\n"
+                                    f"⚽️ <code>{h} — {a}</code>\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"📅 <b>Дата:</b> {date_str} | <b>Начало:</b> {time_str}\n"
+                                    f"🔥 <b>Ставка:</b> ИТБ 1 (1.5) на {h}\n"
+                                    f"📈 <b>Коэффициент:</b> {final_odds}\n"
+                                    f"📉 <b>Нижний порог:</b> {m_odds}\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"📊 <b>Анализ:</b> 🔥 Серийность: Высокая результативность дома ({itb_home}/5)"
+                                )
+                                
                                 await bot.send_message(CHANNEL_ID, msg_vip, parse_mode=ParseMode.HTML)
                                 
                                 kb = InlineKeyboardBuilder()
                                 kb.button(text="💰 Поставил", callback_data="pred_place")
                                 kb.button(text="⏩ Пропустил", callback_data="pred_skip")
                                 await bot.send_message(ADMIN_GROUP_ID, msg_vip, reply_markup=kb.as_markup(), message_thread_id=T_PRED, parse_mode=ParseMode.HTML)
+
                 
                 elif r.status_code in [401, 429]:
                     err_cnt += 1
