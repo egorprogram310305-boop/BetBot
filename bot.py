@@ -137,22 +137,22 @@ async def analyze_strict(team_name, is_home):
         itb_count = sum(1 for s in scores[:5] if int(s) >= 2)
         return itb_count, 0
         
-        async def analyze_h2h(home_team, away_team):
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0)'}
-        query = f"{home_team} vs {away_team} last matches results scores"
-        res = requests.get(f"https://www.google.com/search?q={query}", headers=headers, timeout=7)
-        content = res.text.lower()
+    async def analyze_h2h(home_team, away_team):
+        try:
+            headers = {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0)'}
+            query = f"{home_team} vs {away_team} last matches results scores"
+            res = requests.get(f"https://www.google.com/search?q={query}", headers=headers, timeout=7)
+            content = res.text.lower()
         
-        if "captcha" in content: return "CAPTCHA"
+            if "captcha" in content: return "CAPTCHA"
 
-        scores = re.findall(r'(\d)-\d', content) 
-        if not scores: return 0 
+            scores = re.findall(r'(\d)-\d', content) 
+            if not scores: return 0 
         
-        itb_h2h = sum(1 for s in scores[:5] if int(s) >= 2)
-        return itb_h2h
-    except:
-        return 0
+            itb_h2h = sum(1 for s in scores[:5] if int(s) >= 2)
+            return itb_h2h
+        except:
+            return 0
 
 
 # --- UI HELPER ---
