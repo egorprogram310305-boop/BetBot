@@ -249,7 +249,7 @@ async def btn_instruction(m: types.Message):
         "📍 <b>Контакт для связи:</b> @poprivetstvui"
     )
         await m.answer(text, parse_mode=ParseMode.HTML)
-    except Exception as e:
+   except Exception as e:
         logger.error(f"Ошибка в инструкции: {e}")
         await m.answer("⚠️ Не удалось загрузить картинку. Проверьте наличие файла IMG_7179.png")
 # === КОНЕЦ ВСТАВКИ ===
