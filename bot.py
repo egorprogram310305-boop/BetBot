@@ -136,7 +136,23 @@ async def analyze_strict(team_name, is_home):
         scores = re.findall(r'(\d)-\d' if is_home else r'\d-(\d)', content)
         itb_count = sum(1 for s in scores[:5] if int(s) >= 2)
         return itb_count, 0
-    except: return -1, 0
+        
+        async def analyze_h2h(home_team, away_team):
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0)'}
+        query = f"{home_team} vs {away_team} last matches results scores"
+        res = requests.get(f"https://www.google.com/search?q={query}", headers=headers, timeout=7)
+        content = res.text.lower()
+        
+        if "captcha" in content: return "CAPTCHA"
+
+        scores = re.findall(r'(\d)-\d', content) 
+        if not scores: return 0 
+        
+                itb_h2h = sum(1 for s in scores[:5] if int(s) >= 2)
+        return itb_h2h
+    except:
+        return 0
 
 # --- UI HELPER ---
 def main_menu_kb():
@@ -566,12 +582,14 @@ async def scanner():
                                 continue
                             
                             itb_home, _ = await analyze_strict(ev['home_team'], is_home=True)
-                            
+                            itb_h2h = await analyze_h2h(ev['home_team'], ev['away_team'])
+
                             if itb_home == "CAPTCHA":
                                 err_cnt += 1
                                 continue
                                 
-                            if isinstance(itb_home, int) and itb_home >= 4:
+                            if isinstance(itb_home, int) and itb_home >= 4 and itb_h2h >= 1:
+
                                 sig_cnt += 1
                                 sent.add(ev['id'])
                                 h, a = clean_and_translate(ev['home_team']), clean_and_translate(ev['away_team'])
@@ -591,7 +609,7 @@ async def scanner():
                                     f"📈 <b>Коэффициент:</b> {final_odds}\n"
                                     f"📉 <b>Нижний порог:</b> {m_odds}\n"
                                     f"━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"📊 <b>Анализ:</b> 🔥 Серийность: Высокая результативность дома ({itb_home}/5)"
+                                    f"📊 <b>Анализ:</b> 🔥 Дом: {itb_home}/5 | 🤝 H2H: {itb_h2h}/5"
                                 )
                                 
                                 await bot.send_message(CHANNEL_ID, msg_vip, parse_mode=ParseMode.HTML)
