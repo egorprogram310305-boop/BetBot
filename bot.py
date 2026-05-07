@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import asyncio
 import logging
 import requests
@@ -242,21 +243,25 @@ async def btn_instruction(m: types.Message):
         "Если возникли вопросы — наш администратор всегда на связи.\n"
         "📍 <b>Контакт для связи:</b> @poprivetstvui"
     )
-    try:
-        # Сначала создаем объект фото внутри функции
-        photo = FSInputFile("IMG_7179.png")
-        
-        # Затем отправляем его
-        await m.answer_photo(
-            photo=photo,
-            caption=text,
-            parse_mode=ParseMode.HTML
-        )
-    except Exception as e:
-        # Если фото не нашлось, бот просто пришлет текст, чтобы не падать
-        await m.answer(text, parse_mode=ParseMode.HTML)
-        logger.error(f"Ошибка отправки фото: {e}")
+    # Динамический путь к файлу
+    base_dir = Path(__file__).parent
+    photo_path = base_dir / "IMG_7179.png"
 
+    if photo_path.exists():
+        try:
+            photo = FSInputFile(str(photo_path))
+            await m.answer_photo(
+                photo=photo,
+                caption=text,
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            await m.answer(text, parse_mode=ParseMode.HTML)
+            logger.error(f"Ошибка при отправке фото: {e}")
+    else:
+        # Если файла нет, бот пришлет текст и скажет админу, что файла нет
+        await m.answer(text, parse_mode=ParseMode.HTML)
+        await bot.send_message(ADMIN_ID, f"⚠️ Файл не найден по пути: {photo_path}")
 
 # === КОНЕЦ ВСТАВКИ ===
 
