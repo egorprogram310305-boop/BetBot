@@ -221,6 +221,11 @@ async def btn_profile(m: types.Message):
 
 @dp.message(F.text == "🏛 Инструкция")
 async def btn_instruction(m: types.Message):
+    await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
+    try:
+        # 1. Отправляем фото БЕЗ подписи (чтобы не было ошибки лимита)
+        photo = FSInputFile("IMG_7179.png")
+        await m.answer_photo(photo=photo)
     text = (
         "🏛 <b>ИНСТРУКЦИЯ: BARON’S VERDICT</b>\n\n"
         "Добро пожаловать в эпицентр футбольной аналитики! <b>Baron’s Verdict</b> — это не просто бот, это твой персональный аналитический отдел, который работает 24/7 без эмоций и ошибок.\n\n"
@@ -243,26 +248,10 @@ async def btn_instruction(m: types.Message):
         "Если возникли вопросы — наш администратор всегда на связи.\n"
         "📍 <b>Контакт для связи:</b> @poprivetstvui"
     )
-    # Динамический путь к файлу
-    base_dir = Path(__file__).parent
-    photo_path = base_dir / "IMG_7179.png"
-
-    if photo_path.exists():
-        try:
-            photo = FSInputFile(str(photo_path))
-            await m.answer_photo(
-                photo=photo,
-                caption=text,
-                parse_mode=ParseMode.HTML
-            )
-        except Exception as e:
-            await m.answer(text, parse_mode=ParseMode.HTML)
-            logger.error(f"Ошибка при отправке фото: {e}")
-    else:
-        # Если файла нет, бот пришлет текст и скажет админу, что файла нет
         await m.answer(text, parse_mode=ParseMode.HTML)
-        await bot.send_message(ADMIN_ID, f"⚠️ Файл не найден по пути: {photo_path}")
-
+    except Exception as e:
+        logger.error(f"Ошибка в инструкции: {e}")
+        await m.answer("⚠️ Не удалось загрузить картинку. Проверьте наличие файла IMG_7179.png")
 # === КОНЕЦ ВСТАВКИ ===
 
 @dp.message(F.text == "💳 Подписка")
