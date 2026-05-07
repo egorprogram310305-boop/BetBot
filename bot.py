@@ -128,16 +128,14 @@ async def analyze_strict(team_name, is_home):
         query = f"{team_name} {location} goals last 5 matches results"
         res = requests.get(f"https://www.google.com/search?q={query}", headers=headers, timeout=7)
         content = res.text.lower()
+        if "captcha" in content: return "CAPTCHA"
         
-        if "captcha" in content: return "CAPTCHA", 0
-        if "clean sheet" in content or "strong defense" in content or "0-0" in content:
-            return "CANCEL", 0
-            
         scores = re.findall(r'(\d)-\d' if is_home else r'\d-(\d)', content)
         itb_count = sum(1 for s in scores[:5] if int(s) >= 2)
-        return itb_count, 0
+        return itb_count
     except:
-        return -1, 0
+        return 0
+
         
     async def analyze_h2h(home_team, away_team):
         try:
@@ -580,39 +578,46 @@ async def scanner():
 
                             final_odds = round(price * dynamic_mult, 2)
                             
-                            # --- ВНИМАНИЕ: Проверь, чтобы эти строки были строго под 'price' ---
-                            if not (m_odds <= final_odds <= max_o): 
-                                continue
-                            
-                            itb_home, _ = await analyze_strict(ev['home_team'], is_home=True)
+                                                        # 1. Анализируем Хозяев (как они играют ДОМА)
+                            itb_home = await analyze_strict(ev['home_team'], is_home=True)
+                            # 2. Анализируем Гостей (как они играют В ГОСТЯХ)
+                            itb_away = await analyze_strict(ev['away_team'], is_home=False)
+                            # 3. Анализируем очные встречи
                             itb_h2h = await analyze_h2h(ev['home_team'], ev['away_team'])
 
-                            if itb_home == "CAPTCHA":
-                                err_cnt += 1
+                            if itb_home == "CAPTCHA" or itb_away == "CAPTCHA":
                                 continue
-                                
-                            if isinstance(itb_home, int) and itb_home >= 4 and itb_h2h >= 1:
 
+                            # Определяем, кто из команд прошел фильтр
+                            target_team = None
+                            stat_val = 0
+
+                            if isinstance(itb_home, int) and itb_home >= 4 and itb_h2h >= 1:
+                                target_team = ev['home_team']
+                                stat_val = itb_home
+                            elif isinstance(itb_away, int) and itb_away >= 4 and itb_h2h >= 1:
+                                target_team = ev['away_team']
+                                stat_val = itb_away
+
+                            # Если нашли подходящую команду (хозяев или гостей)
+                            if target_team:
                                 sig_cnt += 1
                                 sent.add(ev['id'])
-                                h, a = clean_and_translate(ev['home_team']), clean_and_translate(ev['away_team'])
+                                h_name, a_name = clean_and_translate(ev['home_team']), clean_and_translate(ev['away_team'])
+                                target_name = clean_and_translate(target_team)
                                 
-                                # Форматируем дату и время (МСК +3)
                                 msk_time = start + timedelta(hours=3)
-                                date_str = msk_time.strftime('%d.%m')
-                                time_str = msk_time.strftime('%H:%M')
-
-                                # НОВЫЙ ДИЗАЙН КАК НА СКРИНШОТЕ
+                                
                                 msg_vip = (
-                                    f"🎩 <b>Baron’s Verdict </b>\n"
-                                    f"⚽️ <code>{h} — {a}</code>\n"
+                                    f"🎩 <b>Baron’s Verdict</b>\n"
+                                    f"⚽️ <code>{h_name} — {a_name}</code>\n"
                                     f"━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"📅 <b>Дата:</b> {date_str} | <b>Начало:</b> {time_str}\n"
-                                    f"🔥 <b>Ставка:</b> ИТБ 1 (1.5) на {h}\n"
+                                    f"📅 <b>Дата:</b> {msk_time.strftime('%d.%m')} | <b>Начало:</b> {msk_time.strftime('%H:%M')}\n"
+                                    f"🔥 <b>Ставка:</b> ИТБ 1.5 на <b>{target_name}</b>\n"
                                     f"📈 <b>Коэффициент:</b> {final_odds}\n"
                                     f"📉 <b>Нижний порог:</b> {m_odds}\n"
                                     f"━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"📊 <b>Анализ:</b> 🔥 Дом: {itb_home}/5 | 🤝 H2H: {itb_h2h}/5"
+                                    f"📊 <b>Анализ:</b> 🔥 Форма: {stat_val}/5 | 🤝 H2H: {itb_h2h}/5"
                                 )
                                 
                                 await bot.send_message(CHANNEL_ID, msg_vip, parse_mode=ParseMode.HTML)
