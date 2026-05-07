@@ -261,17 +261,22 @@ async def btn_instruction(m: types.Message):
 @dp.message(F.text == "💳 Подписка")
 async def btn_sub(m: types.Message):
     kb = InlineKeyboardBuilder()
-    for tid, d in TARIFFS.items(): kb.button(text=f"{d['name']} - {d['price']}₽", callback_data=f"buy_{tid}")
-    # СЮДА ВСТАВЬ СВОЮ ССЫЛКУ, КОТОРУЮ ПОЛУЧИШЬ ПОСЛЕ НАЖАТИЯ PUBLISH
+    for tid, d in TARIFFS.items(): 
+        kb.button(text=f"{d['name']} - {d['price']}₽", callback_data=f"buy_{tid}")
+    
+    # Твоя ссылка на оферту
     offer_link = "https://telegra.ph/Publichnaya-oferta-i-Politika-konfidencialnosti--Barons-Verdict-05-07"
     
+    # В этом тексте ОБЯЗАТЕЛЬНО должна быть ссылка
     text = (
-        "📊 <b>Выберите тарифный план:</b>\n\n"
-        "<i>Оплачивая доступ, вы принимаете условия </i>"
-        f"<a href='{offer_link}'>Публичной оферты</a>"
-        "<i> и подтверждаете, что ознакомлены с отказом от ответственности.</i>"
+        "📊 <b>Выберите тарифный план:</b>\n"
+        "<i>Инвестируйте в качественную аналитику.</i>\n\n"
+        f"Оплачивая доступ, вы принимаете условия <a href='{offer_link}'>Публичной оферты</a>."
     )
-    await m.answer("📊 <b>Выберите тарифный план:</b>\n<i>Инвестируйте в качественную аналитику.</i>", reply_markup=kb.adjust(1).as_markup(), parse_mode=ParseMode.HTML)
+    
+    # parse_mode=ParseMode.HTML важен, чтобы ссылка стала кликабельной
+    await m.answer(text, reply_markup=kb.adjust(1).as_markup(), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
 
 @dp.message(F.text == "🎯 Поиск Прогнозов")
 async def btn_analytics(m: types.Message):
