@@ -15,6 +15,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiohttp import web
 from deep_translator import GoogleTranslator
+from aiogram.types import FSInputFile
 
 # --- CONFIG & SYSTEM ---
 logging.basicConfig(level=logging.INFO)
@@ -160,7 +161,12 @@ def main_menu_kb():
     builder.button(text="🎯 Поиск Прогнозов")
     builder.button(text="👤 Профиль")
     builder.button(text="💳 Подписка")
-    return builder.adjust(2).as_markup(resize_keyboard=True)
+    builder.button(text="🏛 Инструкция")  # Новая кнопка
+    builder.button(text="🚀 Начать")      # Новая кнопка (аналог /start)
+    
+    # adjust(1, 2, 2) значит: 1 кнопка в первом ряду, по 2 в остальных
+    return builder.adjust(1, 2, 2).as_markup(resize_keyboard=True)
+
 
 # --- BOT INTERFACE ---
 @dp.message(Command("ping"))
@@ -211,6 +217,44 @@ async def btn_profile(m: types.Message):
         date_str = res[0].strftime('%d.%m.%Y %H:%M') if res and get_sub_status(m.from_user.id) else "Нет доступа или истекла"
         await m.answer(f"👤 <b>Ваш профиль</b>\nID: <code>{m.from_user.id}</code>\nПодписка до: <b>{date_str}</b>", parse_mode=ParseMode.HTML)
     except: await m.answer("Ошибка БД")
+
+@dp.message(F.text == "🏛 Инструкция")
+async def btn_instruction(m: types.Message):
+    text = (
+        "🏛 <b>ИНСТРУКЦИЯ: BARON’S VERDICT</b>\n\n"
+        "Добро пожаловать в эпицентр футбольной аналитики! <b>Baron’s Verdict</b> — это не просто бот, это твой персональный аналитический отдел, который работает 24/7 без эмоций и ошибок.\n\n"
+        "🛡 <b>Что ты получаешь?</b>\n"
+        "Наш секрет — в уникальном алгоритме динамической корреляции. Мы не просто ищем матчи, мы фильтруем их через «сито» жестких условий:\n"
+        "• 🔥 <b>Форма команд:</b> Анализируем последние 5 матчей. Находим тех, кто «разносит» соперников прямо сейчас.\n"
+        "• 🤝 <b>H2H (Личные встречи):</b> Проверяем историю противостояний. Если команды исторически играют результативно — это наш вариант.\n"
+        "• 📊 <b>Математический перевес:</b> Бот автоматически корректирует коэффициенты, выдавая только те прогнозы, где риск минимален, а потенциал прибыли высок.\n\n"
+        "🚀 <b>Как пользоваться ботом?</b>\n"
+        "1. <b>Следи за уведомлениями:</b> Как только алгоритм находит «золотой» матч — ты получаешь сигнал в чат.\n"
+        "2. <b>Делай ставку:</b> Мы рекомендуем <b>ИТБ 1.5</b> на конкретную команду (это значит, что команда должна забить минимум 2 гола).\n"
+        "3. <b>Управляй банком:</b> Для стабильного пассивного дохода ставь фиксированный процент (флэт 3-5%).\n\n"
+        "💳 <b>Как оформить подписку?</b>\n"
+        "Доступ к VIP-аналитике открывается в пару кликов:\n"
+        "1. Нажми кнопку «💳 Подписка» в главном меню.\n"
+        "2. Выбери подходящий тариф.\n"
+        "3. Переведи сумму по реквизитам. <b>Обязательно</b> укажи проверочный код в комментарии к платежу!\n"
+        "4. Нажми «✅ Я оплатил» и дождись подтверждения.\n\n"
+        "🤝 <b>Поддержка и связь</b>\n"
+        "Если возникли вопросы — наш администратор всегда на связи.\n"
+        "📍 <b>Контакт для связи:</b> @poprivetstvui"
+    )
+    
+    # Отправка фото с описанием (caption)
+    # Если файл лежит рядом с bot.py, используй этот метод:
+    from aiogram.types import FSInputFile
+    photo = FSInputFile("IMG_7179.png") 
+    
+    await m.answer_photo(
+        photo=photo,
+        caption=text,
+        parse_mode=ParseMode.HTML
+    )
+
+# === КОНЕЦ ВСТАВКИ ===
 
 @dp.message(F.text == "💳 Подписка")
 async def btn_sub(m: types.Message):
@@ -320,6 +364,11 @@ async def process_analysis_notice(c: types.CallbackQuery):
     await c.message.edit_reply_markup(reply_markup=None)
     await c.message.answer("Анализ матчей начинается🔎 Как только будет найден прогноз, вы получите уведомление 🔔")
     await c.answer()
+
+@dp.message(F.text == "🚀 Начать")
+async def btn_restart_proxy(m: types.Message):
+    await cmd_start(m)
+
 
 # --- ADMIN PANEL ---
 
