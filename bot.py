@@ -136,6 +136,8 @@ async def analyze_strict(team_name, is_home):
         scores = re.findall(r'(\d)-\d' if is_home else r'\d-(\d)', content)
         itb_count = sum(1 for s in scores[:5] if int(s) >= 2)
         return itb_count, 0
+    except:
+        return -1, 0
         
     async def analyze_h2h(home_team, away_team):
         try:
