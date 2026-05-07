@@ -16,6 +16,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiohttp import web
 from deep_translator import GoogleTranslator
 from aiogram.types import FSInputFile
+    photo = FSInputFile("IMG_7179.png") 
 
 # --- CONFIG & SYSTEM ---
 logging.basicConfig(level=logging.INFO)
@@ -243,10 +244,6 @@ async def btn_instruction(m: types.Message):
         "📍 <b>Контакт для связи:</b> @poprivetstvui"
     )
     
-    # Отправка фото с описанием (caption)
-    # Если файл лежит рядом с bot.py, используй этот метод:
-    from aiogram.types import FSInputFile
-    photo = FSInputFile("IMG_7179.png") 
     
     await m.answer_photo(
         photo=photo,
