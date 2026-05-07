@@ -546,7 +546,7 @@ async def scanner():
                         now = datetime.now(timezone.utc)
                         hours_left = (start - now).total_seconds() / 3600
                         
-                                                if 1.0 < hours_left <= t_depth:
+                        if 1.0 < hours_left <= t_depth:
                             price = ev['bookmakers'][0]['markets'][0]['outcomes'][0]['price']
                             
                             # Динамический множитель
