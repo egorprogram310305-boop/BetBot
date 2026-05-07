@@ -136,7 +136,6 @@ async def analyze_strict(team_name, is_home):
     except:
         return 0
 
-        
     async def analyze_h2h(home_team, away_team):
         try:
             headers = {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0)'}
@@ -578,34 +577,26 @@ async def scanner():
 
                             final_odds = round(price * dynamic_mult, 2)
                             
-                                                        # 1. Анализируем Хозяев (как они играют ДОМА)
+                                                                                   # Анализируем обе команды
                             itb_home = await analyze_strict(ev['home_team'], is_home=True)
-                            # 2. Анализируем Гостей (как они играют В ГОСТЯХ)
                             itb_away = await analyze_strict(ev['away_team'], is_home=False)
-                            # 3. Анализируем очные встречи
                             itb_h2h = await analyze_h2h(ev['home_team'], ev['away_team'])
 
                             if itb_home == "CAPTCHA" or itb_away == "CAPTCHA":
                                 continue
 
-                            # Определяем, кто из команд прошел фильтр
-                            target_team = None
-                            stat_val = 0
-
+                            # Решаем, на кого ставить
+                            target_team, stat_val = None, 0
                             if isinstance(itb_home, int) and itb_home >= 4 and itb_h2h >= 1:
-                                target_team = ev['home_team']
-                                stat_val = itb_home
+                                target_team, stat_val = ev['home_team'], itb_home
                             elif isinstance(itb_away, int) and itb_away >= 4 and itb_h2h >= 1:
-                                target_team = ev['away_team']
-                                stat_val = itb_away
+                                target_team, stat_val = ev['away_team'], itb_away
 
-                            # Если нашли подходящую команду (хозяев или гостей)
                             if target_team:
                                 sig_cnt += 1
                                 sent.add(ev['id'])
                                 h_name, a_name = clean_and_translate(ev['home_team']), clean_and_translate(ev['away_team'])
                                 target_name = clean_and_translate(target_team)
-                                
                                 msk_time = start + timedelta(hours=3)
                                 
                                 msg_vip = (
@@ -619,9 +610,7 @@ async def scanner():
                                     f"━━━━━━━━━━━━━━━━━━━━\n"
                                     f"📊 <b>Анализ:</b> 🔥 Форма: {stat_val}/5 | 🤝 H2H: {itb_h2h}/5"
                                 )
-                                
                                 await bot.send_message(CHANNEL_ID, msg_vip, parse_mode=ParseMode.HTML)
-                                
                                 kb = InlineKeyboardBuilder()
                                 kb.button(text="💰 Поставил", callback_data="pred_place")
                                 kb.button(text="⏩ Пропустил", callback_data="pred_skip")
