@@ -583,7 +583,7 @@ async def scanner():
 
                                 # НОВЫЙ ДИЗАЙН КАК НА СКРИНШОТЕ
                                 msg_vip = (
-                                    f"💎 <b>Baron’s Verdict v7.3</b>\n"
+                                    f"🎩 <b>Baron’s Verdict </b>\n"
                                     f"⚽️ <code>{h} — {a}</code>\n"
                                     f"━━━━━━━━━━━━━━━━━━━━\n"
                                     f"📅 <b>Дата:</b> {date_str} | <b>Начало:</b> {time_str}\n"
@@ -624,6 +624,66 @@ async def scanner():
 
         await asyncio.sleep(1800) # Ждем 30 минут до следующего круга
 
+# --- ОБРАБОТКА НАЖАТИЙ НА КНОПКИ ПРОГНОЗА ---
+
+@dp.callback_query(F.data == "pred_skip")
+async def pred_skip(c: types.CallbackQuery):
+    # Убираем кнопки у сообщения и пишем, что матч пропущен
+    await c.message.edit_reply_markup(reply_markup=None)
+    await c.message.reply("⏩ Матч пропущен.", message_thread_id=T_PRED)
+    await c.answer()
+
+@dp.callback_query(F.data == "pred_place")
+async def pred_place(c: types.CallbackQuery, state: FSMContext):
+    # Реакция на кнопку "Поставил" — запрашиваем сумму
+    msg = await c.message.reply("Введите сумму ставки (₽):", message_thread_id=T_PRED)
+    # Сохраняем ID сообщения, чтобы потом знать, к какому прогнозу относится ставка
+    await state.update_data(orig_msg_id=c.message.message_id, prompt1=msg.message_id)
+    await state.set_state(BetStates.wait_amount)
+    await c.answer()
+
+@dp.message(StateFilter(BetStates.wait_amount))
+async def wait_amount(m: types.Message, state: FSMContext):
+    # Сохраняем сумму и спрашиваем реальный кэф в БК
+    await state.update_data(amount=m.text, prompt2=m.message_id)
+    msg = await m.answer("Введите реальный коэффициент в БК:", message_thread_id=T_PRED)
+    await state.update_data(prompt3=msg.message_id)
+    await state.set_state(BetStates.wait_odds)
+
+@dp.message(StateFilter(BetStates.wait_odds))
+async def wait_real_odds(m: types.Message, state: FSMContext):
+    data = await state.get_data()
+    orig_msg_id = data.get("orig_msg_id")
+    amt = data.get("amount")
+    odds = m.text
+    
+    # Удаляем служебные сообщения бота, чтобы не мусорить в топике
+    for msg_id in [data.get("prompt1"), data.get("prompt2"), data.get("prompt3"), m.message_id]:
+        try: await bot.delete_message(m.chat.id, msg_id)
+        except: pass
+
+    # Создаем новые кнопки для фиксации результата (Вин/Лузо)
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ ВИН", callback_data=f"res_win_{orig_msg_id}_{amt}_{odds}")
+    kb.button(text="🔄 ВОЗВРАТ", callback_data=f"res_ret_{orig_msg_id}_{amt}_{odds}")
+    kb.button(text="❌ ЛОСС", callback_data=f"res_loss_{orig_msg_id}_{amt}_{odds}")
+    
+    try:
+        # Меняем кнопки "Поставил/Пропустил" на кнопки результата
+        await bot.edit_message_reply_markup(chat_id=m.chat.id, message_id=orig_msg_id, reply_markup=kb.as_markup())
+        await bot.send_message(m.chat.id, f"📝 Ставка зафиксирована: {amt}₽ под кэф {odds}", reply_to_message_id=orig_msg_id, message_thread_id=T_PRED)
+    except: pass
+    await state.clear()
+
+@dp.callback_query(F.data.startswith("res_"))
+async def bet_result(c: types.CallbackQuery):
+    # Финальная точка: записываем результат (визуально в чате)
+    _, res_type, msg_id, amt, odds = c.data.split("_")
+    res_text = "✅ ПОБЕДА" if res_type == "win" else "🔄 ВОЗВРАТ" if res_type == "ret" else "❌ ПРОИГРЫШ"
+    
+    final_kb = InlineKeyboardBuilder().button(text=f"Результат: {res_text}", callback_data="noop")
+    await c.message.edit_reply_markup(reply_markup=final_kb.as_markup())
+    await c.answer()
 
 # --- WEB SERVER (For Render Keep-Alive) ---
 async def main():
