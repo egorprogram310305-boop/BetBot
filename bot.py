@@ -16,7 +16,6 @@ from aiogram.fsm.state import State, StatesGroup
 from aiohttp import web
 from deep_translator import GoogleTranslator
 from aiogram.types import FSInputFile
-    photo = FSInputFile("IMG_7179.png") 
 
 # --- CONFIG & SYSTEM ---
 logging.basicConfig(level=logging.INFO)
@@ -243,13 +242,21 @@ async def btn_instruction(m: types.Message):
         "Если возникли вопросы — наш администратор всегда на связи.\n"
         "📍 <b>Контакт для связи:</b> @poprivetstvui"
     )
-    
-    
-    await m.answer_photo(
-        photo=photo,
-        caption=text,
-        parse_mode=ParseMode.HTML
-    )
+    try:
+        # Сначала создаем объект фото внутри функции
+        photo = FSInputFile("IMG_7179.png")
+        
+        # Затем отправляем его
+        await m.answer_photo(
+            photo=photo,
+            caption=text,
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        # Если фото не нашлось, бот просто пришлет текст, чтобы не падать
+        await m.answer(text, parse_mode=ParseMode.HTML)
+        logger.error(f"Ошибка отправки фото: {e}")
+
 
 # === КОНЕЦ ВСТАВКИ ===
 
