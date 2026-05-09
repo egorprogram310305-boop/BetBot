@@ -134,6 +134,7 @@ def clean_and_translate(name):
     except: return cleaned
 
 async def analyze_strict(team_name, is_home):
+    await asyncio.sleep(random.uniform(3, 6)) 
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0)'}
         location = "home" if is_home else "away"
@@ -148,8 +149,9 @@ async def analyze_strict(team_name, is_home):
     except:
         return 0
 
-    async def analyze_h2h(home_team, away_team):
-        try:
+async def analyze_h2h(home_team, away_team):
+        await asyncio.sleep(random.uniform(3, 6))
+         try:
             headers = {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0)'}
             query = f"{home_team} vs {away_team} last matches results scores"
             res = requests.get(f"https://www.google.com/search?q={query}", headers=headers, timeout=7)
@@ -618,6 +620,8 @@ async def scanner():
         league_cnt = 0
         sig_cnt = 0
         err_cnt = 0
+        filtered_cnt = 0 # Счетчик матчей, не прошедших фильтры
+
         
         m_odds = get_setting("min_odds", 1.50)
         max_o = get_setting("max_odds", 2.50)
@@ -666,6 +670,10 @@ async def scanner():
                                 target_team, stat_val = ev['home_team'], itb_home
                             elif isinstance(itb_away, int) and itb_away >= 3 and itb_h2h >= 1:
                                 target_team, stat_val = ev['away_team'], itb_away
+                            else:
+                                # Если условия выше не сработали, значит матч не прошел критерии
+                                filtered_cnt += 1 
+
 
                             if target_team:
                                 sig_cnt += 1
@@ -697,22 +705,26 @@ async def scanner():
                     idx = (idx + 1) % len(API_KEYS)
             except: 
                 err_cnt += 1
-            await asyncio.sleep(2) # Пауза между лигами
+            await asyncio.sleep(5) # Пауза между лигами
         
-        # ОТПРАВКА ОТЧЕТА (Команда /ping 999)
+                # ОТПРАВКА ОТЧЕТА (Команда /ping 999)
+                # ОТПРАВКА ОТЧЕТА
         if SHOW_FULL_REPORT:
+            msk_report_time = datetime.now(timezone.utc) + timedelta(hours=3)
             report = (
                 "⚙️ <b>Отчет круга анализа</b>\n"
                 f"✅ Лиг: {league_cnt}\n"
                 f"🎯 Сигналов: {sig_cnt}\n"
+                f"🗑 Отсеяно: {filtered_cnt}\n" # <--- НОВАЯ СТРОКА
                 f"⚠️ Ошибки API: {err_cnt}\n"
-                f"⏰ Время: {datetime.now().strftime('%H:%M')}"
+                f"⏰ Время: {msk_report_time.strftime('%H:%M')}"
             )
+
             try:
                 await bot.send_message(ADMIN_GROUP_ID, report, message_thread_id=T_LOGS, parse_mode=ParseMode.HTML)
             except: pass
 
-        await asyncio.sleep(1800) # Ждем 30 минут до следующего круга
+        await asyncio.sleep(2400) # Ждем 30 минут до следующего круга
 
 # --- ОБРАБОТКА НАЖАТИЙ НА КНОПКИ ПРОГНОЗА ---
 
