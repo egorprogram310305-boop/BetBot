@@ -137,14 +137,29 @@ async def analyze_strict(team_name, is_home):
     await asyncio.sleep(random.uniform(3, 6)) 
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0)'}
-        location = "home" if is_home else "away"
-        query = f"{team_name} {location} goals last 5 matches results"
+        # Уточняем запрос, чтобы Google давал более релевантные результаты
+        query = f"{team_name} matches results scores"
         res = requests.get(f"https://www.google.com/search?q={query}", headers=headers, timeout=7)
         content = res.text.lower()
         if "captcha" in content: return "CAPTCHA"
         
-        scores = re.findall(r'(\d)-\d' if is_home else r'\d-(\d)', content)
-        itb_count = sum(1 for s in scores[:5] if int(s) >= 2)
+        # Улучшенное регулярное выражение: ищет счета типа 2-1, 1:0, 3 - 2
+        # Игнорирует даты, так как ограничивает числа (от 0 до 9)
+        found_scores = re.findall(r'([0-9])\s*[:\-\u2013]\s*([0-9])', content)
+        
+        itb_count = 0
+        matches_checked = 0
+        for s1, s2 in found_scores:
+            if matches_checked >= 5: break
+            
+            # Если команда дома (is_home=True), смотрим на первую цифру (s1)
+            # Если в гостях — на вторую (s2)
+            goal = int(s1) if is_home else int(s2)
+            
+            if goal >= 2: # Проверяем ИТБ 1.5 (забито 2 и более)
+                itb_count += 1
+            matches_checked += 1
+            
         return itb_count
     except:
         return 0
@@ -153,19 +168,20 @@ async def analyze_h2h(home_team, away_team):
     await asyncio.sleep(random.uniform(3, 6))
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0)'}
-        query = f"{home_team} vs {away_team} last matches results scores"
+        query = f"{home_team} vs {away_team} last matches results"
         res = requests.get(f"https://www.google.com/search?q={query}", headers=headers, timeout=7)
         content = res.text.lower()
-        
         if "captcha" in content: return "CAPTCHA"
 
-        scores = re.findall(r'(\d)-\d', content) 
-        if not scores: return 0 
+        found_scores = re.findall(r'([0-9])\s*[:\-\u2013]\s*([0-9])', content)
+        if not found_scores: return 0 
         
-        itb_h2h = sum(1 for s in scores[:5] if int(s) >= 2)
+        # Считаем, сколько раз в личках было забито 2+ гола (общий тотал для проверки тренда)
+        itb_h2h = sum(1 for s1, s2 in found_scores[:5] if (int(s1) + int(s2)) >= 2)
         return itb_h2h
     except:
         return 0
+
 
 
 # --- UI HELPER ---
@@ -645,14 +661,15 @@ async def scanner():
                             price = ev['bookmakers'][0]['markets'][0]['outcomes'][0]['price']
                             
                             # Динамический множитель
+                                                        # Динамический множитель (более мягкая коррекция)
                             if price < 1.45:
-                                dynamic_mult = m_mult * 1.30 
+                                dynamic_mult = m_mult * 1.10 # Было 1.30
                             elif 1.45 <= price < 1.85:
-                                dynamic_mult = m_mult * 1.15
+                                dynamic_mult = m_mult * 1.05 # Было 1.15
                             elif 1.85 <= price < 2.30:
-                                dynamic_mult = m_mult * 1.05
+                                dynamic_mult = m_mult * 1.02 # Было 1.05
                             else:
-                                dynamic_mult = m_mult * 0.90
+                                dynamic_mult = m_mult * 0.95 # Было 0.90
 
                             final_odds = round(price * dynamic_mult, 2)
                             
@@ -726,66 +743,6 @@ async def scanner():
 
         await asyncio.sleep(2400) # Ждем 30 минут до следующего круга
 
-# --- ОБРАБОТКА НАЖАТИЙ НА КНОПКИ ПРОГНОЗА ---
-
-@dp.callback_query(F.data == "pred_skip")
-async def pred_skip(c: types.CallbackQuery):
-    # Убираем кнопки у сообщения и пишем, что матч пропущен
-    await c.message.edit_reply_markup(reply_markup=None)
-    await c.message.reply("⏩ Матч пропущен.", message_thread_id=T_PRED)
-    await c.answer()
-
-@dp.callback_query(F.data == "pred_place")
-async def pred_place(c: types.CallbackQuery, state: FSMContext):
-    # Реакция на кнопку "Поставил" — запрашиваем сумму
-    msg = await c.message.reply("Введите сумму ставки (₽):", message_thread_id=T_PRED)
-    # Сохраняем ID сообщения, чтобы потом знать, к какому прогнозу относится ставка
-    await state.update_data(orig_msg_id=c.message.message_id, prompt1=msg.message_id)
-    await state.set_state(BetStates.wait_amount)
-    await c.answer()
-
-@dp.message(StateFilter(BetStates.wait_amount))
-async def wait_amount(m: types.Message, state: FSMContext):
-    # Сохраняем сумму и спрашиваем реальный кэф в БК
-    await state.update_data(amount=m.text, prompt2=m.message_id)
-    msg = await m.answer("Введите реальный коэффициент в БК:", message_thread_id=T_PRED)
-    await state.update_data(prompt3=msg.message_id)
-    await state.set_state(BetStates.wait_odds)
-
-@dp.message(StateFilter(BetStates.wait_odds))
-async def wait_real_odds(m: types.Message, state: FSMContext):
-    data = await state.get_data()
-    orig_msg_id = data.get("orig_msg_id")
-    amt = data.get("amount")
-    odds = m.text
-    
-    # Удаляем служебные сообщения бота, чтобы не мусорить в топике
-    for msg_id in [data.get("prompt1"), data.get("prompt2"), data.get("prompt3"), m.message_id]:
-        try: await bot.delete_message(m.chat.id, msg_id)
-        except: pass
-
-    # Создаем новые кнопки для фиксации результата (Вин/Лузо)
-    kb = InlineKeyboardBuilder()
-    kb.button(text="✅ ВИН", callback_data=f"res_win_{orig_msg_id}_{amt}_{odds}")
-    kb.button(text="🔄 ВОЗВРАТ", callback_data=f"res_ret_{orig_msg_id}_{amt}_{odds}")
-    kb.button(text="❌ ЛОСС", callback_data=f"res_loss_{orig_msg_id}_{amt}_{odds}")
-    
-    try:
-        # Меняем кнопки "Поставил/Пропустил" на кнопки результата
-        await bot.edit_message_reply_markup(chat_id=m.chat.id, message_id=orig_msg_id, reply_markup=kb.as_markup())
-        await bot.send_message(m.chat.id, f"📝 Ставка зафиксирована: {amt}₽ под кэф {odds}", reply_to_message_id=orig_msg_id, message_thread_id=T_PRED)
-    except: pass
-    await state.clear()
-
-@dp.callback_query(F.data.startswith("res_"))
-async def bet_result(c: types.CallbackQuery):
-    # Финальная точка: записываем результат (визуально в чате)
-    _, res_type, msg_id, amt, odds = c.data.split("_")
-    res_text = "✅ ПОБЕДА" if res_type == "win" else "🔄 ВОЗВРАТ" if res_type == "ret" else "❌ ПРОИГРЫШ"
-    
-    final_kb = InlineKeyboardBuilder().button(text=f"Результат: {res_text}", callback_data="noop")
-    await c.message.edit_reply_markup(reply_markup=final_kb.as_markup())
-    await c.answer()
 
 # --- WEB SERVER (For Render Keep-Alive) ---
 async def main():
