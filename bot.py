@@ -53,8 +53,8 @@ LEAGUES = [
     # Твои старые лиги
     "soccer_germany_bundesliga", "soccer_epl", "soccer_netherlands_eredivisie",
     "soccer_spain_la_liga", "soccer_belgium_first_div", "soccer_switzerland_superleague",
-    "soccer_austria_bundesliga", "soccer_usa_mls", "soccer_japan_j_league",
-    "soccer_brazil_campeonato", "soccer_norway_eliteserien",
+    "soccer_austria_bundesliga", "soccer_usa_mls",
+    "soccer_norway_eliteserien",
     
     # Новые прибыльные лиги
     "soccer_denmark_superliga",   # Дания
