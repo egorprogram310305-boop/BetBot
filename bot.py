@@ -652,9 +652,9 @@ async def scanner():
 
                             # Решаем, на кого ставить
                             target_team, stat_val = None, 0
-                            if isinstance(itb_home, int) and itb_home >= 4 and itb_h2h >= 1:
+                            if isinstance(itb_home, int) and itb_home >= 3 and itb_h2h >= 1:
                                 target_team, stat_val = ev['home_team'], itb_home
-                            elif isinstance(itb_away, int) and itb_away >= 4 and itb_h2h >= 1:
+                            elif isinstance(itb_away, int) and itb_away >= 3 and itb_h2h >= 1:
                                 target_team, stat_val = ev['away_team'], itb_away
 
                             if target_team:
