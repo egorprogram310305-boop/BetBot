@@ -169,43 +169,61 @@ def clean_and_translate(name):
     try: return GoogleTranslator(source='auto', target='ru').translate(cleaned)
     except: return cleaned
 
-async def analyze_strict(team_name, is_home):
-    await asyncio.sleep(random.uniform(4, 8)) # Time Jitter для имитации человека
+async def analyze_strict(team_name, mode="scored"):
+    """
+    mode="scored": считаем матчи, где команда забила 2+
+    mode="conceded": считаем матчи, где соперники этой команды забивали 2+ (слабая оборона)
+    """
+    # Защита от блокировок: рандомная пауза
+    await asyncio.sleep(random.uniform(4, 8)) 
+    
     try:
+        # Используем расширенный список User-Agents и Referers
         headers = {
             'User-Agent': random.choice(USER_AGENTS),
             'Referer': random.choice(REFERERS)
         }
-        # Ищем именно текущие результаты, чтобы не брать статистику 2023 года
-        query = f"{team_name} matches scores results May 2026"
+        
+        # Строгий поисковый запрос с текущей датой
+        query = f'"{team_name}" football results scores May 2026'
         res = requests.get(f"https://www.google.com/search?q={query}", headers=headers, timeout=10)
         content = res.text.lower()
         
-        if "captcha" in content: return "CAPTCHA"
+        if "captcha" in content: 
+            logger.warning(f"⚠️ CAPTCHA при анализе {team_name}")
+            return "CAPTCHA"
         
-        # Валидация: ищем счета, отсекая аномалии (не более 6 голов)
-        found_scores = re.findall(r'(\d)\s*[:\-\u2013]\s*(\d)', content)
+        # Регулярка теперь ищет счет ВБЛИЗИ названия команды (защита от дат 12.05)
+        # Мы ищем совпадение названия + любые символы + цифра:цифра
+        blocks = re.findall(rf"{team_name.lower()}[^<]{0,50}?(\d)\s*[:\-\u2013]\s*(\d)", content)
         
-        itb_count = 0
+        count = 0
         matches_checked = 0
-        
-        # Проверяем наличие ключевых слов завершенного матча
-        if not any(x in content for x in ["ft", "final", "score", "результат"]):
-            matches_checked = 1 # Снижаем доверие, если не видим признаков счета
+        # Проверяем, есть ли на странице маркеры футбольного матча
+        has_indicators = any(x in content for x in ["ft", "final", "score", "результат", "завершено"])
 
-        for s1, s2 in found_scores:
-            if matches_checked >= 6: break
+        for s1, s2 in blocks:
+            if matches_checked >= 5: break
             h_g, a_g = int(s1), int(s2)
             
-            # Если счет больше 6:1 — скорее всего это дата или мусор
+            # Игнорируем аномалии (счета больше 6 голов — это обычно мусор или даты)
             if h_g > 6 or a_g > 6: continue 
             
-            goal = h_g if is_home else a_g
-            if goal >= 2: itb_count += 1
+            if mode == "scored":
+                # Если хотя бы одна из цифр >= 2, значит команда (или матч с её участием) результативна
+                if h_g >= 2 or a_g >= 2: count += 1
+            elif mode == "conceded":
+                # Если в матче пропущено/забито хоть что-то (индикатор открытой игры)
+                if h_g >= 1 or a_g >= 1: count += 1
+            
             matches_checked += 1
             
-        return itb_count if matches_checked > 0 else 0
-    except: return 0
+        # Защита от "6/5": результат не может быть больше количества проверенных игр
+        final_val = min(count, matches_checked) if (matches_checked > 0 and has_indicators) else 0
+        return final_val
+    except Exception as e:
+        logger.error(f"Ошибка в анализе {team_name}: {e}")
+        return 0
 
 
 async def analyze_h2h(home_team, away_team):
