@@ -65,6 +65,42 @@ LEAGUES = [
     "soccer_chile_campeonato"     # Чили
 ]
 
+LEAGUE_STRENGTH = {
+    # Элита (забивают много)
+    "soccer_netherlands_eredivisie": 1.1, 
+    "soccer_germany_bundesliga": 1.1, 
+    "soccer_norway_eliteserien": 1.1, 
+    "soccer_usa_mls": 1.1,
+    "soccer_switzerland_superleague": 1.1,
+    "soccer_denmark_superliga": 1.1,
+    "soccer_austria_bundesliga": 1.1,
+    "soccer_belgium_first_div": 1.1,
+
+    # Стандарт (баланс)
+    "soccer_epl": 1.0, 
+    "soccer_spain_la_liga": 1.0,
+    "soccer_sweden_allsvenskan": 1.0,
+    "soccer_poland_ekstraklasa": 1.0,
+    "soccer_portugal_primeira_liga": 1.0,
+
+    # Низовые/Жесткие (забивают мало или хаотично)
+    "soccer_turkey_super_lig": 0.9,
+    "soccer_chile_campeonato": 0.8,
+}
+
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (iPad; CPU OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 (605.1.15) Version/17.4.1 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.4; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 OPR/109.0.0.0"
+]
+REFERERS = ["https://www.google.com/", "https://www.bing.com/", "https://twitter.com/", "https://www.facebook.com/"]
 
 # --- FSM STATES ---
 class AdminStates(StatesGroup):
@@ -134,35 +170,43 @@ def clean_and_translate(name):
     except: return cleaned
 
 async def analyze_strict(team_name, is_home):
-    await asyncio.sleep(random.uniform(3, 6)) 
+    await asyncio.sleep(random.uniform(4, 8)) # Time Jitter для имитации человека
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0)'}
-        # Уточняем запрос, чтобы Google давал более релевантные результаты
-        query = f"{team_name} matches results scores"
-        res = requests.get(f"https://www.google.com/search?q={query}", headers=headers, timeout=7)
+        headers = {
+            'User-Agent': random.choice(USER_AGENTS),
+            'Referer': random.choice(REFERERS)
+        }
+        # Ищем именно текущие результаты, чтобы не брать статистику 2023 года
+        query = f"{team_name} matches scores results May 2026"
+        res = requests.get(f"https://www.google.com/search?q={query}", headers=headers, timeout=10)
         content = res.text.lower()
+        
         if "captcha" in content: return "CAPTCHA"
         
-        # Улучшенное регулярное выражение: ищет счета типа 2-1, 1:0, 3 - 2
-        # Игнорирует даты, так как ограничивает числа (от 0 до 9)
-        found_scores = re.findall(r'([0-9])\s*[:\-\u2013]\s*([0-9])', content)
+        # Валидация: ищем счета, отсекая аномалии (не более 6 голов)
+        found_scores = re.findall(r'(\d)\s*[:\-\u2013]\s*(\d)', content)
         
         itb_count = 0
         matches_checked = 0
+        
+        # Проверяем наличие ключевых слов завершенного матча
+        if not any(x in content for x in ["ft", "final", "score", "результат"]):
+            matches_checked = 1 # Снижаем доверие, если не видим признаков счета
+
         for s1, s2 in found_scores:
-            if matches_checked >= 5: break
+            if matches_checked >= 6: break
+            h_g, a_g = int(s1), int(s2)
             
-            # Если команда дома (is_home=True), смотрим на первую цифру (s1)
-            # Если в гостях — на вторую (s2)
-            goal = int(s1) if is_home else int(s2)
+            # Если счет больше 6:1 — скорее всего это дата или мусор
+            if h_g > 6 or a_g > 6: continue 
             
-            if goal >= 2: # Проверяем ИТБ 1.5 (забито 2 и более)
-                itb_count += 1
+            goal = h_g if is_home else a_g
+            if goal >= 2: itb_count += 1
             matches_checked += 1
             
-        return itb_count
-    except:
-        return 0
+        return itb_count if matches_checked > 0 else 0
+    except: return 0
+
 
 async def analyze_h2h(home_team, away_team):
     await asyncio.sleep(random.uniform(3, 6))
@@ -674,22 +718,35 @@ async def scanner():
                             final_odds = round(price * dynamic_mult, 2)
                             
                                                                                    # Анализируем обе команды
+                                                        # 1. Получаем множитель лиги
+                            l_mult = LEAGUE_STRENGTH.get(league, 1.0)
+                            
+                            # 2. Глубокий анализ обеих сторон
                             itb_home = await analyze_strict(ev['home_team'], is_home=True)
                             itb_away = await analyze_strict(ev['away_team'], is_home=False)
                             itb_h2h = await analyze_h2h(ev['home_team'], ev['away_team'])
 
                             if itb_home == "CAPTCHA" or itb_away == "CAPTCHA":
+                                await asyncio.sleep(60) # Пауза при капче
                                 continue
 
-                            # Решаем, на кого ставить
+                            # 3. ЛОГИКА ВЫБОРА (Сравнение)
                             target_team, stat_val = None, 0
-                            if isinstance(itb_home, int) and itb_home >= 3 and itb_h2h >= 1:
+                            
+                            # Порог прохода: для "низовых" лиг (0.8) нужно 4/5, для "элиты" (1.1) хватит 3/5
+                            required_val = 4 if l_mult < 1.0 else 3
+                            
+                            # Сравниваем форму: выбираем того, кто забивает чаще другого
+                            if itb_home >= required_val and itb_home >= itb_away and itb_h2h >= 1:
                                 target_team, stat_val = ev['home_team'], itb_home
-                            elif isinstance(itb_away, int) and itb_away >= 3 and itb_h2h >= 1:
+                            elif itb_away >= required_val and itb_away > itb_home and itb_h2h >= 1:
                                 target_team, stat_val = ev['away_team'], itb_away
                             else:
-                                # Если условия выше не сработали, значит матч не прошел критерии
-                                filtered_cnt += 1 
+                                filtered_cnt += 1
+
+                            # Дополнительный фильтр: если обе команды слишком забивные (перестрелка), 
+                            # это риск, но если H2H подтверждает — берем.
+
 
 
                             if target_team:
