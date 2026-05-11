@@ -700,9 +700,9 @@ async def scanner():
         
         league_cnt, sig_cnt, err_cnt, filtered_cnt = 0, 0, 0, 0
         m_odds = get_setting("min_odds", 1.50)
+        m_mult = get_setting("multiplier", 0.90) # Добавили множитель из БД
         t_depth = get_setting("time_depth", 24)
 
-        # Создаем одну сессию на весь круг обхода лиг
         async with aiohttp.ClientSession() as session:
             for league in LEAGUES:
                 try:
@@ -711,6 +711,7 @@ async def scanner():
                     
                     async with session.get(url, params=params, timeout=15) as r:
                         league_cnt += 1
+                        
                         if r.status == 200:
                             data = await r.json()
                             for ev in data:
@@ -720,6 +721,13 @@ async def scanner():
                                 hours_left = (start - datetime.now(timezone.utc)).total_seconds() / 3600
                                 
                                 if 1.0 < hours_left <= t_depth:
+                                    # Рассчитываем коэффициент (final_odds)
+                                    try:
+                                        price = ev['bookmakers'][0]['markets'][0]['outcomes'][0]['price']
+                                        final_odds = round(price * m_mult, 2)
+                                    except:
+                                        continue
+
                                     # ЛОГИКА АНАЛИЗА
                                     l_mult = LEAGUE_STRENGTH.get(league, 1.0)
                                     itb_home = await analyze_strict(session, ev['home_team'])
@@ -727,11 +735,13 @@ async def scanner():
                                     itb_h2h = await analyze_h2h(session, ev['home_team'], ev['away_team'])
 
                                     if "CAPTCHA" in [itb_home, itb_away, itb_h2h]:
+                                        logger.warning("🛑 Капча в Google! Ждем 2 минуты...")
                                         await asyncio.sleep(120)
-                                        break # Выходим из этой лиги, ждем
+                                        break 
 
                                     req = 4 if l_mult < 1.0 else 3
                                     target_team = None
+                                    stat_val = 0
                                     
                                     if isinstance(itb_home, int) and itb_home >= req and itb_h2h >= 1:
                                         target_team, stat_val = ev['home_team'], itb_home
@@ -743,52 +753,60 @@ async def scanner():
                                     if target_team:
                                         sig_cnt += 1
                                         sent.add(ev['id'])
-                                        h_name, a_name = clean_and_translate(ev['home_team']), clean_and_translate(ev['away_team'])
+                                        h_name = clean_and_translate(ev['home_team'])
+                                        a_name = clean_and_translate(ev['away_team'])
                                         target_name = clean_and_translate(target_team)
                                         msk_time = start + timedelta(hours=3)
                                 
-                                    msg_vip = (
-                                        f"🎩 <b>Baron’s Verdict</b>\n"
-                                        f"⚽️ <code>{h_name} — {a_name}</code>\n"
-                                        f"━━━━━━━━━━━━━━━━━━━━\n"
-                                        f"📅 <b>Дата:</b> {msk_time.strftime('%d.%m')} | <b>Начало:</b> {msk_time.strftime('%H:%M')}\n"
-                                        f"🔥 <b>Ставка:</b> ИТБ 1.5 на <b>{target_name}</b>\n"
-                                        f"📈 <b>Коэффициент:</b> {final_odds}\n"
-                                        f"📉 <b>Нижний порог:</b> {m_odds}\n"
-                                        f"━━━━━━━━━━━━━━━━━━━━\n"
-                                        f"📊 <b>Анализ:</b> 🔥 Форма: {stat_val}/5 | 🤝 H2H: {itb_h2h}/5"
-                                    )
-                                    await bot.send_message(CHANNEL_ID, msg_vip, parse_mode=ParseMode.HTML)
-                                    kb = InlineKeyboardBuilder()
-                                    kb.button(text="💰 Поставил", callback_data="pred_place")
-                                    kb.button(text="⏩ Пропустил", callback_data="pred_skip")
-                                    await bot.send_message(ADMIN_GROUP_ID, msg_vip, reply_markup=kb.as_markup(), message_thread_id=T_PRED, parse_mode=ParseMode.HTML)
-                
-                    elif r.status in [401, 429]:
-                                idx = (idx + 1) % len(API_KEYS)
-                    except Exception as e:
-                        err_cnt += 1
-                        logger.error(f"Scanner error on {league}: {e}")
-                    await asyncio.sleep(3) # Маленькая пауза между лигами
+                                        msg_vip = (
+                                            f"🎩 <b>Baron’s Verdict</b>\n"
+                                            f"⚽️ <code>{h_name} — {a_name}</code>\n"
+                                            f"━━━━━━━━━━━━━━━━━━━━\n"
+                                            f"📅 <b>Дата:</b> {msk_time.strftime('%d.%m')} | <b>Начало:</b> {msk_time.strftime('%H:%M')}\n"
+                                            f"🔥 <b>Ставка:</b> ИТБ 1.5 на <b>{target_name}</b>\n"
+                                            f"📈 <b>Коэффициент:</b> {final_odds}\n"
+                                            f"📉 <b>Нижний порог:</b> {m_odds}\n"
+                                            f"━━━━━━━━━━━━━━━━━━━━\n"
+                                            f"📊 <b>Анализ:</b> 🔥 Форма: {stat_val}/5 | 🤝 H2H: {itb_h2h}/5"
+                                        )
+                                        
+                                        try:
+                                            await bot.send_message(CHANNEL_ID, msg_vip, parse_mode=ParseMode.HTML)
+                                            kb = InlineKeyboardBuilder()
+                                            kb.button(text="💰 Поставил", callback_data="pred_place")
+                                            kb.button(text="⏩ Пропустил", callback_data="pred_skip")
+                                            await bot.send_message(ADMIN_GROUP_ID, msg_vip, reply_markup=kb.as_markup(), message_thread_id=T_PRED, parse_mode=ParseMode.HTML)
+                                        except Exception as e:
+                                            logger.error(f"Ошибка отправки сообщения: {e}")
+                        
+                        elif r.status in [401, 429]:
+                            logger.error(f"Ключ API {API_KEYS[idx]} не работает (Error {r.status}). Меняю ключ...")
+                            idx = (idx + 1) % len(API_KEYS)
+                            break # Прекращаем текущую лигу, переходим к следующей с новым ключом
 
-        
-                # ОТПРАВКА ОТЧЕТА (Команда /ping 999)
+                except Exception as e:
+                    err_cnt += 1
+                    logger.error(f"Scanner error on {league}: {e}")
+                
+                await asyncio.sleep(2) # Пауза между запросами к разным лигам
+
+        # ОТПРАВКА ОТЧЕТА
         if SHOW_FULL_REPORT:
             msk_report_time = datetime.now(timezone.utc) + timedelta(hours=3)
             report = (
                 "⚙️ <b>Отчет круга анализа</b>\n"
                 f"✅ Лиг: {league_cnt}\n"
                 f"🎯 Сигналов: {sig_cnt}\n"
-                f"🗑 Отсеяно: {filtered_cnt}\n" # <--- НОВАЯ СТРОКА
+                f"🗑 Отсеяно: {filtered_cnt}\n"
                 f"⚠️ Ошибки API: {err_cnt}\n"
                 f"⏰ Время: {msk_report_time.strftime('%H:%M')}"
             )
-
             try:
                 await bot.send_message(ADMIN_GROUP_ID, report, message_thread_id=T_LOGS, parse_mode=ParseMode.HTML)
             except: pass
 
-        await asyncio.sleep(2400) # Ждем 30 минут до следующего круга
+        await asyncio.sleep(1800) # Ждем 30 минут до следующего круга
+
 
 
 # --- WEB SERVER (For Render Keep-Alive) ---
