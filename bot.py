@@ -6,6 +6,7 @@ import requests
 import psycopg2
 import random
 import re
+import aiohttp
 from datetime import datetime, timezone, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode, ChatAction
@@ -125,42 +126,62 @@ def init_db():
 
 def get_setting(key, default):
     try:
-        conn = psycopg2.connect(DB_URL); curr = conn.cursor()
-        curr.execute("SELECT value FROM settings WHERE key = %s", (key,))
-        res = curr.fetchone(); curr.close(); conn.close()
-        return float(res[0]) if res else default
-    except: return default
+        # 'with' сам закроет и курсор, и соединение в конце блока
+        with psycopg2.connect(DB_URL) as conn:
+            with conn.cursor() as curr:
+                curr.execute("SELECT value FROM settings WHERE key = %s", (key,))
+                res = curr.fetchone()
+                return float(res[0]) if res else default
+    except Exception as e:
+        logger.error(f"Ошибка получения настройки {key}: {e}")
+        return default
+
 
 def set_setting(key, value):
     try:
-        conn = psycopg2.connect(DB_URL); curr = conn.cursor()
-        curr.execute("INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = %s", (key, str(value), str(value)))
-        conn.commit(); curr.close(); conn.close()
-    except: pass
+        with psycopg2.connect(DB_URL) as conn:
+            with conn.cursor() as curr:
+                curr.execute("""
+                    INSERT INTO settings (key, value) 
+                    VALUES (%s, %s) 
+                    ON CONFLICT (key) DO UPDATE SET value = %s
+                """, (key, str(value), str(value)))
+                # conn.commit() в блоке 'with' происходит автоматически при выходе
+    except Exception as e:
+        logger.error(f"Ошибка сохранения настройки {key}: {e}")
+
 
 def check_and_add_user(uid, username):
     try:
-        conn = psycopg2.connect(DB_URL); curr = conn.cursor()
-        curr.execute("SELECT trial_used FROM users WHERE uid = %s", (uid,))
-        res = curr.fetchone()
-        if not res:
-            end_trial = datetime.now(timezone.utc) + timedelta(days=3)
-            curr.execute("INSERT INTO users (uid, username, sub_end, trial_used) VALUES (%s, %s, %s, 1)", (uid, username, end_trial))
-            conn.commit(); curr.close(); conn.close()
-            return True, True # is_new, trial_given
-        curr.close(); conn.close()
+        with psycopg2.connect(DB_URL) as conn:
+            with conn.cursor() as curr:
+                curr.execute("SELECT trial_used FROM users WHERE uid = %s", (uid,))
+                res = curr.fetchone()
+                if not res:
+                    end_trial = datetime.now(timezone.utc) + timedelta(days=3)
+                    curr.execute("INSERT INTO users (uid, username, sub_end, trial_used) VALUES (%s, %s, %s, 1)", 
+                                 (uid, username, end_trial))
+                    return True, True  # Новый пользователь, триал выдан
+                return False, False # Уже был в базе
+    except Exception as e:
+        logger.error(f"Ошибка при проверке пользователя {uid}: {e}")
         return False, False
-    except: return False, False
+
 
 def get_sub_status(uid):
     if uid == ADMIN_ID: return True
     try:
-        conn = psycopg2.connect(DB_URL); curr = conn.cursor()
-        curr.execute("SELECT sub_end FROM users WHERE uid = %s", (uid,))
-        res = curr.fetchone(); curr.close(); conn.close()
-        if res: return res[0].replace(tzinfo=timezone.utc) > datetime.now(timezone.utc)
-    except: pass
+        with psycopg2.connect(DB_URL) as conn:
+            with conn.cursor() as curr:
+                curr.execute("SELECT sub_end FROM users WHERE uid = %s", (uid,))
+                res = curr.fetchone()
+                if res:
+                    # Сравниваем время окончания с текущим
+                    return res[0].replace(tzinfo=timezone.utc) > datetime.now(timezone.utc)
+    except Exception as e:
+        logger.error(f"Ошибка проверки подписки {uid}: {e}")
     return False
+
 
 # --- ANALYTICS & UTILS ---
 def clean_and_translate(name):
@@ -169,68 +190,46 @@ def clean_and_translate(name):
     try: return GoogleTranslator(source='auto', target='ru').translate(cleaned)
     except: return cleaned
 
-async def analyze_strict(team_name, mode="scored"):
-    """
-    Анализирует результативность команды.
-    mode="scored": считаем матчи, где команда забила 2+
-    """
-    await asyncio.sleep(random.uniform(4, 8)) 
-    
+async def analyze_strict(session, team_name, mode="scored"):
+    """Полностью асинхронная версия анализа через сессию"""
+    await asyncio.sleep(random.uniform(2, 4)) # Чуть уменьшим паузу для скорости
     try:
-        headers = {
-            'User-Agent': random.choice(USER_AGENTS),
-            'Referer': random.choice(REFERERS)
-        }
-        
+        headers = {'User-Agent': random.choice(USER_AGENTS), 'Referer': random.choice(REFERERS)}
         query = f'"{team_name}" football results scores May 2026'
-        res = requests.get(f"https://www.google.com/search?q={query}", headers=headers, timeout=10)
-        content = res.text.lower()
         
-        if "captcha" in content: 
-            logger.warning(f"⚠️ CAPTCHA при анализе {team_name}")
-            return "CAPTCHA"
-        
-        # Исправлено: двойные фигурные скобки для f-строки
-        blocks = re.findall(rf"{team_name.lower()}[^<]{{0,50}}?(\d)\s*[:\-\u2013]\s*(\d)", content)
-        
-        count = 0
-        matches_checked = 0
-        has_indicators = any(x in content for x in ["ft", "final", "score", "результат", "завершено"])
-
-        for s1, s2 in blocks:
-            if matches_checked >= 5: break
-            h_g, a_g = int(s1), int(s2)
-            if h_g > 6 or a_g > 6: continue 
+        async with session.get(f"https://www.google.com/search?q={query}", headers=headers, timeout=10) as resp:
+            content = (await resp.text()).lower()
             
-            if mode == "scored":
-                if h_g >= 2 or a_g >= 2: count += 1
-            matches_checked += 1
+            if "captcha" in content: 
+                return "CAPTCHA"
             
-        final_val = min(count, matches_checked) if (matches_checked > 0 and has_indicators) else 0
-        return final_val
-    except Exception as e:
-        logger.error(f"Ошибка в анализе {team_name}: {e}")
-        return 0
+            blocks = re.findall(rf"{team_name.lower()}[^<]{{0,50}}?(\d)\s*[:\-\u2013]\s*(\d)", content)
+            count, matches_checked = 0, 0
+            has_indicators = any(x in content for x in ["ft", "final", "score", "результат", "завершено"])
 
-
-
-async def analyze_h2h(home_team, away_team):
-    await asyncio.sleep(random.uniform(3, 6))
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0)'}
-        query = f"{home_team} vs {away_team} last matches results"
-        res = requests.get(f"https://www.google.com/search?q={query}", headers=headers, timeout=7)
-        content = res.text.lower()
-        if "captcha" in content: return "CAPTCHA"
-
-        found_scores = re.findall(r'([0-9])\s*[:\-\u2013]\s*([0-9])', content)
-        if not found_scores: return 0 
-        
-        # Считаем, сколько раз в личках было забито 2+ гола (общий тотал для проверки тренда)
-        itb_h2h = sum(1 for s1, s2 in found_scores[:5] if (int(s1) + int(s2)) >= 2)
-        return itb_h2h
+            for s1, s2 in blocks:
+                if matches_checked >= 5: break
+                h_g, a_g = int(s1), int(s2)
+                if h_g > 6 or a_g > 6: continue 
+                if mode == "scored" and (h_g >= 2 or a_g >= 2): count += 1
+                matches_checked += 1
+                
+            return min(count, matches_checked) if (matches_checked > 0 and has_indicators) else 0
     except:
         return 0
+
+async def analyze_h2h(session, home_team, away_team):
+    """Асинхронный H2H"""
+    try:
+        headers = {'User-Agent': random.choice(USER_AGENTS)}
+        query = f"{home_team} vs {away_team} last matches results"
+        async with session.get(f"https://www.google.com/search?q={query}", headers=headers, timeout=10) as resp:
+            content = (await resp.text()).lower()
+            if "captcha" in content: return "CAPTCHA"
+            found_scores = re.findall(r'([0-9])\s*[:\-\u2013]\s*([0-9])', content)
+            return sum(1 for s1, s2 in found_scores[:5] if (int(s1) + int(s2)) >= 2)
+    except: return 0
+
 
 
 
@@ -390,15 +389,21 @@ async def done(c: types.CallbackQuery):
 async def adm_ok(c: types.CallbackQuery):
     _, _, tid, uid = c.data.split("_")
     end = datetime.now(timezone.utc) + timedelta(days=TARIFFS[tid]['days'])
-    conn = psycopg2.connect(DB_URL); curr = conn.cursor()
-    curr.execute("UPDATE users SET sub_end = %s WHERE uid = %s", (end, int(uid))); conn.commit(); curr.close(); conn.close()
     
     try:
-        # Создаем кнопку, которая при нажатии отправит тот же текст
+        with psycopg2.connect(DB_URL) as conn:
+            with conn.cursor() as curr:
+                curr.execute("UPDATE users SET sub_end = %s WHERE uid = %s", (end, int(uid)))
+        
+        # Кнопка для пользователя
         kb = InlineKeyboardBuilder().button(text="🚀 Начать анализировать матчи", callback_data="start_analysis_notice")
-        await bot.send_message(int(uid), "🎉 <b>Оплата успешно подтверждена!</b> Доступ открыт.", reply_markup=kb.as_markup(), parse_mode=ParseMode.HTML)
-    except: pass
-    await c.message.edit_text(f"{c.message.text}\n\n✅ <b>ОДОБРЕНО</b>")
+        await bot.send_message(int(uid), "🎉 <b>Оплата успешно подтверждена!</b> Доступ открыт.", 
+                               reply_markup=kb.as_markup(), parse_mode=ParseMode.HTML)
+        await c.message.edit_text(f"{c.message.text}\n\n✅ <b>ОДОБРЕНО</b>")
+    except Exception as e:
+        logger.error(f"Ошибка при одобрении подписки: {e}")
+        await c.answer("Ошибка БД при активации")
+
 
 
 @dp.callback_query(F.data.startswith("adm_no_"))
@@ -666,98 +671,76 @@ async def wait_real_odds(m: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("res_"))
 async def bet_result(c: types.CallbackQuery):
-    _, res_type, msg_id, amt, odds = c.data.split("_")
-    res_text = "✅ ПОБЕДА" if res_type == "win" else "🔄 ВОЗВРАТ" if res_type == "ret" else "❌ ПРОИГРЫШ"
-    profit = round(float(amt) * float(odds) - float(amt), 2) if res_type == "win" else 0
-    profit_str = f"+{profit}₽" if res_type == "win" else f"0₽" if res_type == "ret" else f"-{amt}₽"
-    
-    final_kb = InlineKeyboardBuilder().button(text=f"{res_text} ({profit_str})", callback_data="noop")
-    await c.message.edit_reply_markup(reply_markup=final_kb.as_markup())
+    try:
+        _, res_type, msg_id, amt, odds = c.data.split("_")
+        amt_f = float(amt.replace(",", "."))
+        odds_f = float(odds.replace(",", "."))
+        
+        res_text = "✅ ПОБЕДА" if res_type == "win" else "🔄 ВОЗВРАТ" if res_type == "ret" else "❌ ПРОИГРЫШ"
+        profit = round(amt_f * odds_f - amt_f, 2) if res_type == "win" else 0
+        profit_str = f"+{profit}₽" if res_type == "win" else f"0₽" if res_type == "ret" else f"-{amt_f}₽"
+        
+        final_kb = InlineKeyboardBuilder().button(text=f"{res_text} ({profit_str})", callback_data="noop")
+        await c.message.edit_reply_markup(reply_markup=final_kb.as_markup())
+    except Exception as e:
+        await c.answer("Ошибка в данных ставки")
+        logger.error(f"Bet result error: {e}")
 
 # --- FULL SCANNER ---
 async def scanner():
+    import aiohttp
     sent = set()
     idx = 0
     
     while True:
-        if not API_KEYS: await asyncio.sleep(60); continue
+        if not API_KEYS: 
+            logger.error("🚀 API KEYS NOT FOUND!")
+            await asyncio.sleep(60)
+            continue
         
-        # Переменные для отчета
-        league_cnt = 0
-        sig_cnt = 0
-        err_cnt = 0
-        filtered_cnt = 0 # Счетчик матчей, не прошедших фильтры
-
-        
+        league_cnt, sig_cnt, err_cnt, filtered_cnt = 0, 0, 0, 0
         m_odds = get_setting("min_odds", 1.50)
-        max_o = get_setting("max_odds", 2.50)
-        m_mult = get_setting("multiplier", 0.90)
         t_depth = get_setting("time_depth", 24)
-        
-        for league in LEAGUES:
-            try:
-                r = requests.get(f"https://api.the-odds-api.com/v4/sports/{league}/odds/", 
-                                 params={'apiKey': API_KEYS[idx], 'regions': 'eu', 'markets': 'h2h'}, timeout=10)
-                league_cnt += 1
-                
-                if r.status_code == 200:
-                    for ev in r.json():
-                        if ev['id'] in sent: continue
-                        start = datetime.fromisoformat(ev['commence_time'].replace('Z', '+00:00'))
-                        now = datetime.now(timezone.utc)
-                        hours_left = (start - now).total_seconds() / 3600
-                        
-                        if 1.0 < hours_left <= t_depth:
-                            price = ev['bookmakers'][0]['markets'][0]['outcomes'][0]['price']
-                            
-                            # Динамический множитель
-                                                        # Динамический множитель (более мягкая коррекция)
-                            if price < 1.45:
-                                dynamic_mult = m_mult * 1.10 # Было 1.30
-                            elif 1.45 <= price < 1.85:
-                                dynamic_mult = m_mult * 1.05 # Было 1.15
-                            elif 1.85 <= price < 2.30:
-                                dynamic_mult = m_mult * 1.02 # Было 1.05
-                            else:
-                                dynamic_mult = m_mult * 0.95 # Было 0.90
 
-                            final_odds = round(price * dynamic_mult, 2)
-                            
-                                                                                   # Анализируем обе команды
-                                                        # 1. Получаем множитель лиги
-                                                        # --- ИСПРАВЛЕННЫЙ БЛОК АНАЛИЗА ---
-                            l_mult = LEAGUE_STRENGTH.get(league, 1.0)
-                            
-                            # Вызываем функции правильно (без старого аргумента is_home)
-                            itb_home = await analyze_strict(ev['home_team'], mode="scored")
-                            itb_away = await analyze_strict(ev['away_team'], mode="scored")
-                            itb_h2h = await analyze_h2h(ev['home_team'], ev['away_team'])
+        # Создаем одну сессию на весь круг обхода лиг
+        async with aiohttp.ClientSession() as session:
+            for league in LEAGUES:
+                try:
+                    url = f"https://api.the-odds-api.com/v4/sports/{league}/odds/"
+                    params = {'apiKey': API_KEYS[idx], 'regions': 'eu', 'markets': 'h2h'}
+                    
+                    async with session.get(url, params=params, timeout=15) as r:
+                        league_cnt += 1
+                        if r.status == 200:
+                            data = await r.json()
+                            for ev in data:
+                                if ev['id'] in sent: continue
+                                
+                                start = datetime.fromisoformat(ev['commence_time'].replace('Z', '+00:00'))
+                                hours_left = (start - datetime.now(timezone.utc)).total_seconds() / 3600
+                                
+                                if 1.0 < hours_left <= t_depth:
+                                    # ЛОГИКА АНАЛИЗА
+                                    l_mult = LEAGUE_STRENGTH.get(league, 1.0)
+                                    itb_home = await analyze_strict(session, ev['home_team'])
+                                    itb_away = await analyze_strict(session, ev['away_team'])
+                                    itb_h2h = await analyze_h2h(session, ev['home_team'], ev['away_team'])
 
-                            # Проверка на капчу во всех трех запросах
-                            if "CAPTCHA" in [itb_home, itb_away, itb_h2h]:
-                                logger.warning("🛑 Обнаружена капча. Пауза 2 минуты.")
-                                await asyncio.sleep(120) 
-                                continue
+                                    if "CAPTCHA" in [itb_home, itb_away, itb_h2h]:
+                                        await asyncio.sleep(120)
+                                        break # Выходим из этой лиги, ждем
 
-                            target_team, stat_val = None, 0
-                            required_val = 4 if l_mult < 1.0 else 3
-                            
-                            # Проверяем, что результаты — числа, и сравниваем
-                            if isinstance(itb_home, int) and itb_home >= required_val and itb_home >= itb_away and itb_h2h >= 1:
-                                target_team, stat_val = ev['home_team'], itb_home
-                            elif isinstance(itb_away, int) and itb_away >= required_val and itb_away > itb_home and itb_h2h >= 1:
-                                target_team, stat_val = ev['away_team'], itb_away
-                            else:
-                                filtered_cnt += 1
-                            # --- КОНЕЦ ИСПРАВЛЕННОГО БЛОКА ---
+                                    req = 4 if l_mult < 1.0 else 3
+                                    target_team = None
+                                    
+                                    if isinstance(itb_home, int) and itb_home >= req and itb_h2h >= 1:
+                                        target_team, stat_val = ev['home_team'], itb_home
+                                    elif isinstance(itb_away, int) and itb_away >= req and itb_h2h >= 1:
+                                        target_team, stat_val = ev['away_team'], itb_away
+                                    else:
+                                        filtered_cnt += 1
 
-
-                            # Дополнительный фильтр: если обе команды слишком забивные (перестрелка), 
-                            # это риск, но если H2H подтверждает — берем.
-
-
-
-                            if target_team:
+                                    if target_team:
                                 sig_cnt += 1
                                 sent.add(ev['id'])
                                 h_name, a_name = clean_and_translate(ev['home_team']), clean_and_translate(ev['away_team'])
@@ -782,15 +765,15 @@ async def scanner():
                                 await bot.send_message(ADMIN_GROUP_ID, msg_vip, reply_markup=kb.as_markup(), message_thread_id=T_PRED, parse_mode=ParseMode.HTML)
 
                 
-                elif r.status_code in [401, 429]:
+                elif r.status in [401, 429]:
+                            idx = (idx + 1) % len(API_KEYS)
+                except Exception as e:
                     err_cnt += 1
-                    idx = (idx + 1) % len(API_KEYS)
-            except: 
-                err_cnt += 1
-            await asyncio.sleep(5) # Пауза между лигами
+                    logger.error(f"Scanner error on {league}: {e}")
+                await asyncio.sleep(3) # Маленькая пауза между лигами
+
         
                 # ОТПРАВКА ОТЧЕТА (Команда /ping 999)
-                # ОТПРАВКА ОТЧЕТА
         if SHOW_FULL_REPORT:
             msk_report_time = datetime.now(timezone.utc) + timedelta(hours=3)
             report = (
