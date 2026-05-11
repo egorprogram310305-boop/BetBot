@@ -778,12 +778,18 @@ async def scanner():
                                             await bot.send_message(ADMIN_GROUP_ID, msg_vip, reply_markup=kb.as_markup(), message_thread_id=T_PRED, parse_mode=ParseMode.HTML)
                                         except Exception as e:
                                             logger.error(f"Ошибка отправки сообщения: {e}")
-                        
-                                    elif r.status in [401, 429]:
-                            logger.error(f"Ключ API {API_KEYS[idx]} исчерпан. Переключаюсь на следующий...")
-                            idx = (idx + 1) % len(API_KEYS)
-                            continue # Теперь бот не выйдет из цикла, а пойдет к следующей лиге
+                                                if r.status == 200:
+                            data = await r.json()
+                            # ... тут твой код обработки матчей (data) ...
+                            # Проверь, чтобы цикл 'for ev in data:' был внутри этого 'if'
+                            for ev in data:
+                                # (весь код обработки матча...)
+                                pass # (это заглушка, у тебя там основной код)
 
+                        elif r.status in [401, 429]:
+                            logger.error(f"Ключ API исчерпан. Переключаюсь на следующий...")
+                            idx = (idx + 1) % len(API_KEYS)
+                            continue 
 
                 except Exception as e:
                     err_cnt += 1
