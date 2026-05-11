@@ -709,39 +709,37 @@ async def scanner():
                     url = f"https://api.the-odds-api.com/v4/sports/{league}/odds/"
                     params = {'apiKey': API_KEYS[idx], 'regions': 'eu', 'markets': 'h2h'}
                     
-                    async with session.get(url, params=params, timeout=15) as r:
+                                        async with session.get(url, params=params, timeout=15) as r:
                         league_cnt += 1
                         
                         if r.status == 200:
                             data = await r.json()
                             for ev in data:
-                                if ev['id'] in sent: continue
+                                if ev['id'] in sent: 
+                                    continue
                                 
                                 start = datetime.fromisoformat(ev['commence_time'].replace('Z', '+00:00'))
                                 hours_left = (start - datetime.now(timezone.utc)).total_seconds() / 3600
                                 
                                 if 1.0 < hours_left <= t_depth:
-                                    # Рассчитываем коэффициент (final_odds)
                                     try:
                                         price = ev['bookmakers'][0]['markets'][0]['outcomes'][0]['price']
                                         final_odds = round(price * m_mult, 2)
                                     except:
                                         continue
 
-                                    # ЛОГИКА АНАЛИЗА
                                     l_mult = LEAGUE_STRENGTH.get(league, 1.0)
                                     itb_home = await analyze_strict(session, ev['home_team'])
                                     itb_away = await analyze_strict(session, ev['away_team'])
                                     itb_h2h = await analyze_h2h(session, ev['home_team'], ev['away_team'])
 
                                     if "CAPTCHA" in [itb_home, itb_away, itb_h2h]:
-                                        logger.warning("🛑 Капча в Google! Ждем 2 минуты...")
+                                        logger.warning("🛑 Капча! Пауза 2 мин.")
                                         await asyncio.sleep(120)
                                         break 
 
                                     req = 4 if l_mult < 1.0 else 3
-                                    target_team = None
-                                    stat_val = 0
+                                    target_team, stat_val = None, 0
                                     
                                     if isinstance(itb_home, int) and itb_home >= req and itb_h2h >= 1:
                                         target_team, stat_val = ev['home_team'], itb_home
@@ -769,27 +767,19 @@ async def scanner():
                                             f"━━━━━━━━━━━━━━━━━━━━\n"
                                             f"📊 <b>Анализ:</b> 🔥 Форма: {stat_val}/5 | 🤝 H2H: {itb_h2h}/5"
                                         )
-                                        
                                         try:
                                             await bot.send_message(CHANNEL_ID, msg_vip, parse_mode=ParseMode.HTML)
                                             kb = InlineKeyboardBuilder()
                                             kb.button(text="💰 Поставил", callback_data="pred_place")
                                             kb.button(text="⏩ Пропустил", callback_data="pred_skip")
                                             await bot.send_message(ADMIN_GROUP_ID, msg_vip, reply_markup=kb.as_markup(), message_thread_id=T_PRED, parse_mode=ParseMode.HTML)
-                                        except Exception as e:
-                                            logger.error(f"Ошибка отправки сообщения: {e}")
-                                                if r.status == 200:
-                            data = await r.json()
-                            # ... тут твой код обработки матчей (data) ...
-                            # Проверь, чтобы цикл 'for ev in data:' был внутри этого 'if'
-                            for ev in data:
-                                # (весь код обработки матча...)
-                                pass # (это заглушка, у тебя там основной код)
-
+                                        except: pass
+                        
                         elif r.status in [401, 429]:
-                            logger.error(f"Ключ API исчерпан. Переключаюсь на следующий...")
+                            logger.error(f"Ключ API {idx+1} исчерпан. Переключаюсь...")
                             idx = (idx + 1) % len(API_KEYS)
-                            continue 
+                            continue
+
 
                 except Exception as e:
                     err_cnt += 1
