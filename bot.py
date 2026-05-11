@@ -709,11 +709,11 @@ async def scanner():
                     url = f"https://api.the-odds-api.com/v4/sports/{league}/odds/"
                     params = {'apiKey': API_KEYS[idx], 'regions': 'eu', 'markets': 'h2h'}
                     
-                    async with session.get(url, params=params, timeout=15) as r:
-                                league_cnt += 1
+                                        async with session.get(url, params=params, timeout=15) as r:
+                        league_cnt += 1
                         
-                            if r.status == 200:
-                                data = await r.json()
+                        if r.status == 200:
+                            data = await r.json()
                             for ev in data:
                                 if ev['id'] in sent: 
                                     continue
@@ -779,7 +779,6 @@ async def scanner():
                             logger.error(f"Ключ API {idx+1} исчерпан. Переключаюсь...")
                             idx = (idx + 1) % len(API_KEYS)
                             continue
-
 
                 except Exception as e:
                     err_cnt += 1
