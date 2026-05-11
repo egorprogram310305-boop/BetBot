@@ -779,10 +779,11 @@ async def scanner():
                                         except Exception as e:
                                             logger.error(f"Ошибка отправки сообщения: {e}")
                         
-                        elif r.status in [401, 429]:
-                            logger.error(f"Ключ API {API_KEYS[idx]} не работает (Error {r.status}). Меняю ключ...")
+                                                elif r.status in [401, 429]:
+                            logger.error(f"Ключ API {API_KEYS[idx]} исчерпан. Переключаюсь на следующий...")
                             idx = (idx + 1) % len(API_KEYS)
-                            break # Прекращаем текущую лигу, переходим к следующей с новым ключом
+                            continue # Теперь бот не выйдет из цикла, а пойдет к следующей лиге
+
 
                 except Exception as e:
                     err_cnt += 1
