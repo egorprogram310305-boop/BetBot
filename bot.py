@@ -740,7 +740,7 @@ async def scanner():
                                     else:
                                         filtered_cnt += 1
 
-                                    if target_team:
+                              if target_team:
                                 sig_cnt += 1
                                 sent.add(ev['id'])
                                 h_name, a_name = clean_and_translate(ev['home_team']), clean_and_translate(ev['away_team'])
