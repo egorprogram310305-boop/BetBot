@@ -740,37 +740,36 @@ async def scanner():
                                     else:
                                         filtered_cnt += 1
 
-                              if target_team:
-                                sig_cnt += 1
-                                sent.add(ev['id'])
-                                h_name, a_name = clean_and_translate(ev['home_team']), clean_and_translate(ev['away_team'])
-                                target_name = clean_and_translate(target_team)
-                                msk_time = start + timedelta(hours=3)
+                                    if target_team:
+                                        sig_cnt += 1
+                                        sent.add(ev['id'])
+                                        h_name, a_name = clean_and_translate(ev['home_team']), clean_and_translate(ev['away_team'])
+                                        target_name = clean_and_translate(target_team)
+                                        msk_time = start + timedelta(hours=3)
                                 
-                                msg_vip = (
-                                    f"🎩 <b>Baron’s Verdict</b>\n"
-                                    f"⚽️ <code>{h_name} — {a_name}</code>\n"
-                                    f"━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"📅 <b>Дата:</b> {msk_time.strftime('%d.%m')} | <b>Начало:</b> {msk_time.strftime('%H:%M')}\n"
-                                    f"🔥 <b>Ставка:</b> ИТБ 1.5 на <b>{target_name}</b>\n"
-                                    f"📈 <b>Коэффициент:</b> {final_odds}\n"
-                                    f"📉 <b>Нижний порог:</b> {m_odds}\n"
-                                    f"━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"📊 <b>Анализ:</b> 🔥 Форма: {stat_val}/5 | 🤝 H2H: {itb_h2h}/5"
-                                )
-                                await bot.send_message(CHANNEL_ID, msg_vip, parse_mode=ParseMode.HTML)
-                                kb = InlineKeyboardBuilder()
-                                kb.button(text="💰 Поставил", callback_data="pred_place")
-                                kb.button(text="⏩ Пропустил", callback_data="pred_skip")
-                                await bot.send_message(ADMIN_GROUP_ID, msg_vip, reply_markup=kb.as_markup(), message_thread_id=T_PRED, parse_mode=ParseMode.HTML)
-
+                                    msg_vip = (
+                                        f"🎩 <b>Baron’s Verdict</b>\n"
+                                        f"⚽️ <code>{h_name} — {a_name}</code>\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"📅 <b>Дата:</b> {msk_time.strftime('%d.%m')} | <b>Начало:</b> {msk_time.strftime('%H:%M')}\n"
+                                        f"🔥 <b>Ставка:</b> ИТБ 1.5 на <b>{target_name}</b>\n"
+                                        f"📈 <b>Коэффициент:</b> {final_odds}\n"
+                                        f"📉 <b>Нижний порог:</b> {m_odds}\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"📊 <b>Анализ:</b> 🔥 Форма: {stat_val}/5 | 🤝 H2H: {itb_h2h}/5"
+                                    )
+                                    await bot.send_message(CHANNEL_ID, msg_vip, parse_mode=ParseMode.HTML)
+                                    kb = InlineKeyboardBuilder()
+                                    kb.button(text="💰 Поставил", callback_data="pred_place")
+                                    kb.button(text="⏩ Пропустил", callback_data="pred_skip")
+                                    await bot.send_message(ADMIN_GROUP_ID, msg_vip, reply_markup=kb.as_markup(), message_thread_id=T_PRED, parse_mode=ParseMode.HTML)
                 
-                elif r.status in [401, 429]:
-                            idx = (idx + 1) % len(API_KEYS)
-                except Exception as e:
-                    err_cnt += 1
-                    logger.error(f"Scanner error on {league}: {e}")
-                await asyncio.sleep(3) # Маленькая пауза между лигами
+                    elif r.status in [401, 429]:
+                                idx = (idx + 1) % len(API_KEYS)
+                    except Exception as e:
+                        err_cnt += 1
+                        logger.error(f"Scanner error on {league}: {e}")
+                    await asyncio.sleep(3) # Маленькая пауза между лигами
 
         
                 # ОТПРАВКА ОТЧЕТА (Команда /ping 999)
