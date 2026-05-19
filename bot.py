@@ -194,8 +194,13 @@ async def analyze_strict(session, team_name, mode="scored"):
     """Полностью асинхронная версия анализа через сессию"""
     await asyncio.sleep(random.uniform(2, 4)) # Чуть уменьшим паузу для скорости
     try:
-        headers = {'User-Agent': random.choice(USER_AGENTS), 'Referer': random.choice(REFERERS)}
-        query = f'"{team_name}" football results scores May 2026'
+               headers = {'User-Agent': random.choice(USER_AGENTS), 'Referer': random.choice(REFERERS)}
+        # Динамически получаем текущий месяц на английском (May, June...) и год
+        cur_dt = datetime.now(timezone.utc)
+        m_name = cur_dt.strftime("%B")
+        y_name = cur_dt.strftime("%Y")
+        query = f'"{team_name}" football results scores {m_name} {y_name}'
+
         
         async with session.get(f"https://www.google.com/search?q={query}", headers=headers, timeout=10) as resp:
             content = (await resp.text()).lower()
