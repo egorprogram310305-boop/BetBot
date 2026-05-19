@@ -194,7 +194,7 @@ async def analyze_strict(session, team_name, mode="scored"):
     """Полностью асинхронная версия анализа через сессию"""
     await asyncio.sleep(random.uniform(2, 4)) # Чуть уменьшим паузу для скорости
     try:
-               headers = {'User-Agent': random.choice(USER_AGENTS), 'Referer': random.choice(REFERERS)}
+        headers = {'User-Agent': random.choice(USER_AGENTS), 'Referer': random.choice(REFERERS)}
         # Динамически получаем текущий месяц на английском (May, June...) и год
         cur_dt = datetime.now(timezone.utc)
         m_name = cur_dt.strftime("%B")
