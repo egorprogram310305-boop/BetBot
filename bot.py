@@ -216,7 +216,8 @@ async def analyze_strict(session, team_name, mode="scored"):
                 if matches_checked >= 5: break
                 h_g, a_g = int(s1), int(s2)
                 if h_g > 6 or a_g > 6: continue 
-                if mode == "scored" and (h_g >= 2 or a_g >= 2): count += 1
+                if mode == "scored" and team_goals >= 2:
+                    count += 1
                 matches_checked += 1
                 
             return min(count, matches_checked) if (matches_checked > 0 and has_indicators) else 0
@@ -730,6 +731,9 @@ async def scanner():
                                     try:
                                         price = ev['bookmakers'][0]['markets'][0]['outcomes'][0]['price']
                                         final_odds = round(price * m_mult, 2)
+                                         if final_odds < m_odds:
+                                            filtered_cnt += 1
+                                            continue
                                     except:
                                         continue
 
@@ -743,12 +747,17 @@ async def scanner():
                                         await asyncio.sleep(120)
                                         break 
 
-                                    req = 4 if l_mult < 1.0 else 3
+                                    if l_mult >= 1.1:
+                                        req = 2
+                                    elif l_mult >= 1.0:
+                                        req = 3
+                                    else:
+                                        req = 3
                                     target_team, stat_val = None, 0
                                     
-                                    if isinstance(itb_home, int) and itb_home >= req and itb_h2h >= 1:
+                                    if isinstance(itb_home, int) and itb_home >= req and itb_h2h >= 0:
                                         target_team, stat_val = ev['home_team'], itb_home
-                                    elif isinstance(itb_away, int) and itb_away >= req and itb_h2h >= 1:
+                                    elif isinstance(itb_away, int) and itb_away >= req and itb_h2h >= 0:
                                         target_team, stat_val = ev['away_team'], itb_away
                                     else:
                                         filtered_cnt += 1
