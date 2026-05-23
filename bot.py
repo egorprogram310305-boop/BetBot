@@ -731,9 +731,9 @@ async def scanner():
                                     try:
                                         price = ev['bookmakers'][0]['markets'][0]['outcomes'][0]['price']
                                         final_odds = round(price * m_mult, 2)
-                                         if final_odds < m_odds:
-                                            filtered_cnt += 1
-                                            continue
+                                        if final_odds < m_odds:
+                                           filtered_cnt += 1
+                                           continue
                                     except:
                                         continue
 
